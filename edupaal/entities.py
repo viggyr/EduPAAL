@@ -235,7 +235,14 @@ class MasteryRecord:
 class DynamicOverride:
     """A temporary mastery override. Overrides are scoped to one node or
     global, and they expire — unless explicitly promoted into a durable
-    assertion via ``promote_override``."""
+    assertion via ``promote_override``.
+
+    Precedence (see ``MasteryEngine.active_override``): an active
+    node-scoped override beats an active global one; among active overrides
+    of the same scope, the most recently created wins — a newer operator
+    correction supersedes an older one. Shadowed overrides stay in history
+    as an audit trail.
+    """
 
     learner_id: str
     level: MasteryLevel
@@ -244,12 +251,15 @@ class DynamicOverride:
     reason: str
     promoted: bool = False
     id: str = field(default_factory=lambda: _new_id("ovr"))
+    created_at: datetime = field(default_factory=_utcnow)
 
     def __post_init__(self) -> None:
         if isinstance(self.level, str):
             self.level = MasteryLevel(self.level)
         if self.expires_at.tzinfo is None:
             self.expires_at = self.expires_at.replace(tzinfo=timezone.utc)
+        if self.created_at.tzinfo is None:
+            self.created_at = self.created_at.replace(tzinfo=timezone.utc)
 
     def is_active(self, now: Optional[datetime] = None) -> bool:
         now = now or _utcnow()

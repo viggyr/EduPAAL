@@ -106,3 +106,74 @@ def test_promote_override_on_decomposed_topic_fails_clearly(skill):
     )
     with pytest.raises(ValueError, match="only leaf TOPIC nodes"):
         skill.promote_override("dropout")
+
+
+def test_same_scope_newest_override_wins(skill):
+    from edupaal.entities import DynamicOverride
+
+    promote_to(skill, "linear-equations", "beginner")
+    first = skill.set_override(
+        MasteryLevel.INTERMEDIATE,
+        reason="first judgement",
+        scope_node_id="linear-equations",
+        expires_at=_utcnow() + timedelta(days=30),
+    )
+    # A newer, shorter correction must supersede the older long-lived one.
+    second = DynamicOverride(
+        learner_id="learner-1",
+        level=MasteryLevel.ADVANCED,
+        scope_node_id="linear-equations",
+        expires_at=_utcnow() + timedelta(days=1),
+        reason="corrected judgement",
+        created_at=first.created_at + timedelta(seconds=1),
+    )
+    skill.store.save_override(second)
+    assert skill.active_override("linear-equations").id == second.id
+    assert skill.effective_mastery("linear-equations") == MasteryLevel.ADVANCED
+    # the shadowed override is still in history
+    assert len(skill.store.list_overrides("learner-1")) == 2
+
+
+def test_node_scoped_beats_newer_global(skill):
+    from edupaal.entities import DynamicOverride
+
+    promote_to(skill, "linear-equations", "beginner")
+    scoped = skill.set_override(
+        MasteryLevel.INTERMEDIATE,
+        reason="scoped",
+        scope_node_id="linear-equations",
+    )
+    glob = DynamicOverride(
+        learner_id="learner-1",
+        level=MasteryLevel.ADVANCED,
+        scope_node_id=None,
+        expires_at=_utcnow() + timedelta(days=1),
+        reason="global",
+        created_at=scoped.created_at + timedelta(seconds=1),
+    )
+    skill.store.save_override(glob)
+    assert skill.active_override("linear-equations").id == scoped.id
+
+
+def test_promote_picks_effective_override(skill):
+    from edupaal.entities import DynamicOverride
+
+    promote_to(skill, "linear-equations", "beginner")
+    first = skill.set_override(
+        MasteryLevel.INTERMEDIATE,
+        reason="first",
+        scope_node_id="linear-equations",
+    )
+    second = DynamicOverride(
+        learner_id="learner-1",
+        level=MasteryLevel.ADVANCED,
+        scope_node_id="linear-equations",
+        expires_at=_utcnow() + timedelta(days=1),
+        reason="second",
+        created_at=first.created_at + timedelta(seconds=1),
+    )
+    skill.store.save_override(second)
+    record = skill.promote_override("linear-equations")
+    assert record.level == MasteryLevel.ADVANCED
+    assert f"promoted override {second.id}" in record.reason
+    assert skill.effective_mastery("linear-equations") == MasteryLevel.ADVANCED

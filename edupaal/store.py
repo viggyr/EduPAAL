@@ -169,11 +169,24 @@ class SQLiteBackend:
                 level TEXT NOT NULL,
                 scope_node_id TEXT,
                 expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT '',
                 reason TEXT NOT NULL DEFAULT '',
                 promoted INTEGER NOT NULL DEFAULT 0
             );
             """
         )
+        # Lightweight migration for databases created before created_at
+        # existed (draft-era only; no production data): pre-migration rows
+        # get an empty created_at and sort as oldest.
+        cols = {
+            r[1]
+            for r in self._conn.execute("PRAGMA table_info(overrides)").fetchall()
+        }
+        if "created_at" not in cols:
+            self._conn.execute(
+                "ALTER TABLE overrides ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"
+            )
+            self._conn.commit()
         self._conn.commit()
 
     # -- learners & preferences --
@@ -441,14 +454,16 @@ class SQLiteBackend:
     def save_override(self, override: DynamicOverride) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO overrides"
-            " (id, learner_id, level, scope_node_id, expires_at, reason, promoted)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            " (id, learner_id, level, scope_node_id, expires_at, created_at,"
+            " reason, promoted)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 override.id,
                 override.learner_id,
                 override.level.value,
                 override.scope_node_id,
                 _dt_to_str(override.expires_at),
+                _dt_to_str(override.created_at),
                 override.reason,
                 int(override.promoted),
             ),
@@ -467,6 +482,12 @@ class SQLiteBackend:
                 level=MasteryLevel(r["level"]),
                 scope_node_id=r["scope_node_id"],
                 expires_at=_str_to_dt(r["expires_at"]),
+                # Pre-migration rows have '': sort them as oldest.
+                created_at=(
+                    _str_to_dt(r["created_at"])
+                    if r["created_at"]
+                    else datetime.min.replace(tzinfo=timezone.utc)
+                ),
                 reason=r["reason"],
                 promoted=bool(r["promoted"]),
             )

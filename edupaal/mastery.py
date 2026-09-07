@@ -237,19 +237,29 @@ class MasteryEngine:
         node_id: Optional[str] = None,
         now: Optional[datetime] = None,
     ) -> Optional[DynamicOverride]:
-        """The override currently shaping a node: a node-scoped active
-        override wins; otherwise a global one. ``node_id=None`` matches only
-        global overrides."""
+        """The override currently shaping a node.
+
+        Precedence: an active node-scoped override beats an active global
+        one. Among active overrides of the *same* scope, the most recently
+        created wins — a newer operator correction supersedes an older one
+        (a long-lived stale override must not silently shadow a newer short
+        correction). Shadowed overrides remain in history as an audit trail.
+        ``node_id=None`` matches only global overrides.
+        """
         now = now or _utcnow()
-        scoped = global_ = None
+        scoped: List[DynamicOverride] = []
+        glob: List[DynamicOverride] = []
         for override in self.store.list_overrides(learner_id):
             if not override.is_active(now):
                 continue
             if node_id is not None and override.scope_node_id == node_id:
-                scoped = override
+                scoped.append(override)
             elif override.scope_node_id is None:
-                global_ = override
-        return scoped or global_
+                glob.append(override)
+        pool = scoped or glob
+        if not pool:
+            return None
+        return max(pool, key=lambda o: o.created_at)
 
     def effective_mastery(
         self, learner_id: str, node_id: str, now: Optional[datetime] = None
@@ -299,15 +309,24 @@ class MasteryEngine:
     def promote_override(
         self, learner_id: str, scope_node_id: Optional[str] = None
     ) -> MasteryRecord:
-        """Promote an active temporary override into a durable assertion."""
+        """Promote an active temporary override into a durable assertion.
+
+        Promotes the *effective* override for the scope — the same one
+        ``active_override`` reports (most recently created among active
+        same-scope overrides). Promotion retires the scope's whole
+        temporary stack: the effective override becomes the durable
+        assertion and any shadowed same-scope overrides are retired with
+        it, so the assertion stands on its own afterwards.
+        """
         now = _utcnow()
-        target: Optional[DynamicOverride] = None
-        for override in self.store.list_overrides(learner_id):
-            if override.is_active(now) and override.scope_node_id == scope_node_id:
-                target = override
-                break
-        if target is None:
+        candidates = [
+            o
+            for o in self.store.list_overrides(learner_id)
+            if o.is_active(now) and o.scope_node_id == scope_node_id
+        ]
+        if not candidates:
             raise ValueError("no active override for that scope to promote")
+        target = max(candidates, key=lambda o: o.created_at)
         if target.scope_node_id is None:
             raise ValueError("global overrides cannot be promoted; scope them first")
         scope_node = self.graph.get(target.scope_node_id)
@@ -328,8 +347,11 @@ class MasteryEngine:
             asserted_by="override-promotion",
             reason=f"promoted override {target.id}: {target.reason}",
         )
-        target.promoted = True
-        self.store.save_override(target)
+        # Retire the scope's whole temporary stack so the assertion stands
+        # on its own: no active temporary override may contradict it.
+        for o in candidates:
+            o.promoted = True
+            self.store.save_override(o)
         return record
 
     # --------------------------------------------------------------- internals

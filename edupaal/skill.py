@@ -146,7 +146,12 @@ class EduPAALSkill:
         scope_node_id: Optional[str] = None,
         expires_at: Optional[datetime] = None,
     ) -> DynamicOverride:
-        """Set a temporary override. Temporary unless explicitly promoted."""
+        """Set a temporary override. Temporary unless explicitly promoted.
+
+        Setting a new override for a scope that already has an active one
+        supersedes it: among active same-scope overrides the most recently
+        created wins (the older one stays in history as an audit trail).
+        """
         if isinstance(level, str):
             level = MasteryLevel(level)
         if level == MasteryLevel.UNKNOWN:
@@ -184,7 +189,8 @@ class EduPAALSkill:
     def active_override(
         self, node_id: Optional[str] = None, now: Optional[datetime] = None
     ) -> Optional[DynamicOverride]:
-        """The override currently shaping a node (node-scoped wins, else global)."""
+        """The override currently shaping a node: node-scoped wins over
+        global; among active same-scope overrides the newest wins."""
         return self.engine.active_override(self._require_learner(), node_id, now)
 
     # ----------------------------------------------------------------- reading

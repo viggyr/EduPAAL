@@ -48,6 +48,10 @@ specific topic. The core contribution is underneath that interface:
 - `assert_mastery()` is the privileged path for assessment agents/humans: it appends
   an assertion record with full provenance; it never rewrites history.
 - Dynamic overrides are temporary unless explicitly promoted into a durable assertion.
+  Precedence: a node-scoped override beats a global one; among active overrides of
+  the same scope the **most recently created wins** (a newer correction supersedes an
+  older one). Promoting an override retires the scope's whole temporary stack, so
+  the new assertion stands on its own.
 
 ## Knowledge graph
 
