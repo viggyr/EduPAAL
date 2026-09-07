@@ -1,8 +1,9 @@
 """Core entity schemas for EduPAAL.
 
-These dataclasses are the storage contract: every backend (SQLite, Mem0
-adapter, ...) persists exactly these shapes. They carry no behavior beyond
-validation — the mastery engine, retrieval, and skill layers interpret them.
+These dataclasses are the storage contract: every storage provider (SQLite,
+Mem0, MemOS — see edupaal/providers/) persists exactly these shapes. They
+carry no behavior beyond validation — the mastery engine, retrieval, and
+skill layers interpret them.
 """
 
 from __future__ import annotations

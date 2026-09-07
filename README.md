@@ -107,15 +107,45 @@ pip install pytest
 pytest
 ```
 
-## Storage backends
+## Storage providers
 
-`SQLiteBackend` (stdlib only) is the default. `StorageBackend` is a protocol —
-a Mem0 adapter is the intended next backend (documented in `edupaal/store.py`,
-not implemented): same protocol, semantic retrieval for evidence, mastery math
-untouched.
+`SQLiteBackend` (stdlib only) is the default. `StorageBackend` is a protocol,
+and two optional **memory providers** implement it — Mem0 and MemOS — so a
+deployment can swap the storage engine without touching framework logic
+(mastery math is untouched; it only depends on the protocol):
+
+| | `SQLiteBackend` | `Mem0Provider` (`edupaal[mem0-provider]`) | `MemOSProvider` (`edupaal[memos-provider]`) |
+|---|---|---|---|
+| Install | stdlib only | `pip install "edupaal[mem0-provider]"` (`mem0ai`, `fastembed`) | `pip install "edupaal[memos-provider]"` (`MemoryOS`) |
+| Record format | SQL rows | one Mem0 memory per entity, canonical JSON text, `infer=False` (verbatim, no LLM rewriting) | one MemOS `TextualMemoryItem` per entity, canonical JSON text via direct CRUD (never `extract()`) |
+| Lookup | SQL | exact metadata filters (`edupaal_kind`/`edupaal_id`/`learner_id`/`node_id`) — vector search never used for authoritative reads | in-memory scan over metadata — same filters, no semantic search |
+| Embeddings | n/a | required by the vector store but never consulted; local `fastembed` by default, no API keys | not used (`NaiveTextMemory` is the non-vector text memory) |
+| Persistence | single file | embedded Qdrant dir (`EDUPAAL_MEM0_QDRANT_PATH`, default `~/.edupaal/mem0_qdrant`) | JSON file, write-through on every mutation (`EDUPAAL_MEMOS_DIR`, default `~/.edupaal/memos`) |
+| Telemetry | n/a | forced off on import (`MEM0_TELEMETRY` defaults to `False`) — learner data must not leave the machine | n/a |
+
+All three pass the same conformance suite (`tests/test_backend_conformance.py`):
+exact round trips for every entity, plan versioning, append-only evidence/mastery
+history (duplicate ids raise `ValueError`), override ordering/deletion, and
+durability across reopen. Provider tests skip — loudly, never as fake passes —
+when the extra isn't installed.
+
+Honest limitations: the providers scan O(n) records per lookup (fine for a
+personalization store, not for millions of rows); Mem0 generates its own memory
+ids (the EduPAAL id lives in metadata and record text); MemOS persists via
+`dump()`/`load()` with no transactional locking. None of the providers change
+what the framework computes — they only change where the records live.
+
+```bash
+pip install "edupaal[mem0-provider]"    # or "edupaal[memos-provider]", or "edupaal[all-providers]"
+python -c "
+from edupaal import Mem0Provider  # or MemOSProvider
+from edupaal import EduPAALSkill, build_seed_graph
+skill = EduPAALSkill(Mem0Provider.from_env(), build_seed_graph())
+"
+```
 
 ## Status
 
 Draft reference implementation (v0.1.0). Clean, tested core — not feature-complete.
 Out of scope for this draft: demotion/decay heuristics, a universal knowledge graph
-(seed exemplars only), the Mem0 adapter, and any claim of empirical efficacy.
+(seed exemplars only), and any claim of empirical efficacy.

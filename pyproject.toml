@@ -19,6 +19,17 @@ classifiers = [
     "Topic :: Education",
 ]
 
+[project.optional-dependencies]
+# Mem0 as an EduPAAL memory provider (edupaal.providers.Mem0Provider).
+# fastembed gives a local, keyless embedding model so the provider works
+# out of the box; any mem0 embedder (openai, ollama, ...) can be selected
+# via EDUPAAL_MEM0_EMBEDDER instead.
+mem0-provider = ["mem0ai>=2.0", "fastembed>=0.3"]
+# MemOS as an EduPAAL memory provider (edupaal.providers.MemOSProvider).
+memos-provider = ["MemoryOS>=0.1"]
+# Everything.
+all-providers = ["mem0ai>=2.0", "fastembed>=0.3", "MemoryOS>=0.1"]
+
 [project.urls]
 Homepage = "https://github.com/viggyr/EduPAAL"
 

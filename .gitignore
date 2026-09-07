@@ -6,3 +6,6 @@ build/
 .pytest_cache/
 *.db
 .venv/
+
+# MemOS file logger writes here when its cwd is the repo root
+.memos/

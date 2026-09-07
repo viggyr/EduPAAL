@@ -41,6 +41,22 @@ __all__ = [
     "SQLiteBackend",
     "StorageBackend",
     "build_seed_graph",
+    # Optional memory providers (edupaal/providers): Mem0Provider, MemOSProvider.
+    # Imported lazily so the core package stays dependency-free; importing
+    # edupaal itself never requires mem0ai or MemoryOS.
+    "Mem0Provider",
+    "MemOSProvider",
 ]
 
 __version__ = "0.1.0"
+
+
+def __getattr__(name: str):
+    # Lazy optional-provider exports: `from edupaal import Mem0Provider`
+    # works when the corresponding extra is installed, without making
+    # `import edupaal` depend on it.
+    if name in ("Mem0Provider", "MemOSProvider"):
+        from . import providers
+
+        return getattr(providers, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

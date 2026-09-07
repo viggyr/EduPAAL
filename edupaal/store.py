@@ -516,18 +516,15 @@ class SQLiteBackend:
 
 
 # ---------------------------------------------------------------------------
-# Future backend: Mem0 adapter (documented, not implemented)
+# Implemented providers: see edupaal/providers/
 # ---------------------------------------------------------------------------
 #
-# A Mem0-backed implementation of StorageBackend would:
-#   * persist each entity as a Mem0 memory with metadata
-#     {kind: node|evidence|mastery_record|..., learner_id, node_id, ...},
-#   * keep the append-only history by writing new memories per record
-#     (never updating in place),
-#   * use Mem0's semantic search for evidence lookup ("show me everything
-#     about regularization from the quiz agent"),
-#   * leave the mastery math untouched — the engine only depends on the
-#     StorageBackend protocol, so swapping SQLite for Mem0 changes no
-#     framework logic.
-#
-# The protocol above is deliberately narrow so the adapter stays small.
+# Mem0Provider (edupaal/providers/mem0_provider.py) and MemOSProvider
+# (edupaal/providers/memos_provider.py) implement this same StorageBackend
+# protocol on top of Mem0 and MemOS respectively. Each entity is persisted
+# as one canonical JSON record stored verbatim (no LLM rewriting), with
+# deterministic metadata for exact lookup and read-after-write verification,
+# so the providers give the same exactness guarantees as SQLiteBackend.
+# Mastery math is untouched — the engine only depends on this protocol, so
+# swapping the provider changes no framework logic. See the README's
+# "Storage providers" section for configuration and trade-offs.
