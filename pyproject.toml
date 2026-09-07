@@ -27,6 +27,8 @@ classifiers = [
 mem0-provider = ["mem0ai>=2.0", "fastembed>=0.3"]
 # MemOS as an EduPAAL memory provider (edupaal.providers.MemOSProvider).
 memos-provider = ["MemoryOS>=0.1"]
+# Postgres as an EduPAAL storage backend (edupaal.PostgresBackend), e.g. Neon.
+postgres = ["psycopg[binary]>=3.1"]
 # Everything.
 all-providers = ["mem0ai>=2.0", "fastembed>=0.3", "MemoryOS>=0.1"]
 

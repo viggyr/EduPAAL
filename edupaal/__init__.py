@@ -37,6 +37,7 @@ __all__ = [
     "MasteryRecord",
     "NodeLevel",
     "KnowledgeNode",
+    "PostgresBackend",
     "Retriever",
     "SQLiteBackend",
     "StorageBackend",
@@ -46,6 +47,8 @@ __all__ = [
     # edupaal itself never requires mem0ai or MemoryOS.
     "Mem0Provider",
     "MemOSProvider",
+    # Optional Postgres backend (edupaal/postgres_backend.py): PostgresBackend.
+    # Imported lazily so `import edupaal` never requires psycopg.
 ]
 
 __version__ = "0.1.0"
@@ -59,4 +62,8 @@ def __getattr__(name: str):
         from . import providers
 
         return getattr(providers, name)
+    if name == "PostgresBackend":
+        from .postgres_backend import PostgresBackend
+
+        return PostgresBackend
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
