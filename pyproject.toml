@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edupaal"
+version = "0.1.0"
+description = "EduPAAL — a portable memory-management skill for personalized structured learning"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Vignesh Radhakrishna" }]
+keywords = ["personalization", "learner-model", "knowledge-tracing", "agent-memory", "education"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Education",
+    "Intended Audience :: Developers",
+    "Topic :: Education",
+]
+
+[project.urls]
+Homepage = "https://github.com/viggyr/EduPAAL"
+
+[tool.setuptools.packages.find]
+include = ["edupaal*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

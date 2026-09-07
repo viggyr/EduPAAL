@@ -1,0 +1,312 @@
+"""The EduPAAL mastery engine: versioned, explainable, deterministic heuristics.
+
+PAAL *owns* mastery transitions — it is not dumb storage. Vertical agents
+report normalized evidence; the engine applies the promotion rules. Every
+rule parameter is a tunable knob (see ``MasteryParams``): the framework
+defines the shape of the rules and ships transparent defaults, the
+deployment controls the dials.
+
+heuristic-v1 rules
+------------------
+* Evidence and assertions target *leaf* TOPIC nodes only (enforced — a
+  decomposed topic must be reported through its sub-topics, the finest grain
+  available). Concept/subject/space mastery, and the mastery of a decomposed
+  topic, is pure rollup (see ``edupaal.retrieval``). Overrides may target any
+  node and win over rollup for that node.
+* The first ever evidence for a topic moves UNKNOWN -> BEGINNER: any
+  engagement establishes the beginner state.
+* From BEGINNER (or INTERMEDIATE), the engine evaluates the up-to-K most
+  recent evidence items inside a W-day window anchored at the latest
+  evidence timestamp:
+    - need at least K items in the set,
+    - mean performance must clear the bar for the next level
+      (t_intermediate / t_advanced),
+    - no item in the set may fall below t_contradict (it blocks promotion),
+    - INTERMEDIATE -> ADVANCED additionally requires >= 2 distinct
+      activity_types in the set when cross_modal_advanced is on.
+* Promotions chain within one call (BEGINNER -> INTERMEDIATE -> ADVANCED),
+  each step writing its own MasteryRecord. Demotion/decay is intentionally
+  out of scope for v1.
+
+Every transition writes a MasteryRecord carrying the rule version, the exact
+parameters in effect, and the evidence IDs that caused it — so any past
+decision can be replayed and explained.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional
+
+from .entities import (
+    DynamicOverride,
+    Evidence,
+    MasteryLevel,
+    MasteryParams,
+    MasteryRecord,
+    NodeLevel,
+    _new_id,
+    _utcnow,
+)
+from .graph import KnowledgeGraph
+from .store import StorageBackend
+
+HEURISTIC_VERSION = "heuristic-v1"
+ASSERTION_VERSION = "assertion-v1"
+
+
+class MasteryEngine:
+    def __init__(
+        self,
+        store: StorageBackend,
+        graph: KnowledgeGraph,
+        default_params: Optional[MasteryParams] = None,
+    ) -> None:
+        self.store = store
+        self.graph = graph
+        self.default_params = default_params or MasteryParams()
+
+    # ------------------------------------------------------------ parameters
+
+    def params_for(self, learner_id: str, node_id: str) -> MasteryParams:
+        """Resolve the effective knobs: plan override for the node, else the
+        nearest ancestor's override (concept, then subject...), else defaults."""
+        plan = self.store.get_plan_for_learner(learner_id)
+        if plan is not None:
+            node = self.graph.get(node_id)
+            candidates = [node_id] + [a.id for a in self.graph.ancestors(node_id)]
+            for cid in candidates:
+                if cid in plan.criteria_overrides:
+                    return plan.criteria_overrides[cid]
+        return self.default_params
+
+    # ---------------------------------------------------------------- record
+
+    def record_evidence(self, evidence: Evidence) -> List[MasteryRecord]:
+        """Persist evidence and apply the promotion rules.
+
+        Returns the MasteryRecords written by this call (possibly empty when
+        the evidence does not move mastery). Raises on invalid evidence.
+        """
+        node = self.graph.get(evidence.node_id)
+        if node.level != NodeLevel.TOPIC:
+            raise ValueError(
+                f"evidence must target a TOPIC node ({node.id} is {node.level.value}); "
+                "higher levels roll up from topics"
+            )
+        if self.graph.children(node.id):
+            raise ValueError(
+                f"topic {node.id} is decomposed into sub-topics; record evidence "
+                "on the finest-grained sub-topic instead"
+            )
+        self.store.save_evidence(evidence)
+
+        written: List[MasteryRecord] = []
+        if self._current_level(evidence.learner_id, evidence.node_id) == MasteryLevel.UNKNOWN:
+            written.append(
+                self._write_record(
+                    evidence.learner_id,
+                    evidence.node_id,
+                    MasteryLevel.BEGINNER,
+                    HEURISTIC_VERSION,
+                    self.params_for(evidence.learner_id, evidence.node_id),
+                    [evidence.id],
+                    updated_at=evidence.occurred_at,
+                )
+            )
+
+        # Fixed-point promotion: keep stepping while the evidence supports it.
+        # Each step re-reads the stored level, so one strong evidence set can
+        # chain BEGINNER -> INTERMEDIATE -> ADVANCED, writing one record per step.
+        while True:
+            level = self._current_level(evidence.learner_id, evidence.node_id)
+            if level == MasteryLevel.ADVANCED:
+                break
+            nxt = self._try_promote(evidence.learner_id, evidence.node_id, level)
+            if nxt is None:
+                break
+            written.append(nxt)
+
+        return written
+
+    def _try_promote(
+        self, learner_id: str, node_id: str, current: MasteryLevel
+    ) -> Optional[MasteryRecord]:
+        params = self.params_for(learner_id, node_id)
+        evidence = sorted(
+            self.store.list_evidence(learner_id, node_id),
+            key=lambda e: e.occurred_at,
+        )
+        if not evidence:
+            return None
+        anchor = max(e.occurred_at for e in evidence)
+        cutoff = anchor - timedelta(days=params.window_days)
+        windowed = [e for e in evidence if e.occurred_at >= cutoff]
+        candidates = windowed[-params.k_evidence :]
+        if len(candidates) < params.k_evidence:
+            return None
+
+        if current == MasteryLevel.BEGINNER:
+            target, bar = MasteryLevel.INTERMEDIATE, params.t_intermediate
+        elif current == MasteryLevel.INTERMEDIATE:
+            target, bar = MasteryLevel.ADVANCED, params.t_advanced
+        else:  # pragma: no cover - loop guard makes this unreachable
+            return None
+
+        mean_perf = sum(e.performance for e in candidates) / len(candidates)
+        if mean_perf < bar:
+            return None
+        if any(e.performance < params.t_contradict for e in candidates):
+            return None
+        if (
+            target == MasteryLevel.ADVANCED
+            and params.cross_modal_advanced
+            and len({e.activity_type for e in candidates}) < 2
+        ):
+            return None
+
+        return self._write_record(
+            learner_id,
+            node_id,
+            target,
+            HEURISTIC_VERSION,
+            params,
+            [e.id for e in candidates],
+            updated_at=anchor,
+        )
+
+    # --------------------------------------------------------------- assert
+
+    def assert_mastery(
+        self,
+        learner_id: str,
+        node_id: str,
+        level: MasteryLevel,
+        asserted_by: str,
+        reason: str,
+    ) -> MasteryRecord:
+        """Privileged override path for assessment agents and humans.
+
+        Writes a MasteryRecord marked as an assertion. It does not erase or
+        rewrite history — it appends, like everything else. Subsequent
+        evidence continues from the asserted level.
+        """
+        if isinstance(level, str):
+            level = MasteryLevel(level)
+        if level == MasteryLevel.UNKNOWN:
+            raise ValueError("cannot assert UNKNOWN")
+        node = self.graph.get(node_id)
+        if node.level != NodeLevel.TOPIC:
+            raise ValueError("assertions target TOPIC nodes; higher levels roll up")
+        if self.graph.children(node_id):
+            raise ValueError(
+                f"topic {node_id} is decomposed into sub-topics; assert on the "
+                "finest-grained sub-topic instead (or use an override)"
+            )
+        return self._write_record(
+            learner_id,
+            node_id,
+            level,
+            ASSERTION_VERSION,
+            self.params_for(learner_id, node_id),
+            evidence_ids=[],
+            assertion=True,
+            asserted_by=asserted_by,
+            reason=reason,
+            updated_at=_utcnow(),
+        )
+
+    # -------------------------------------------------------------- resolve
+
+    def current_level(self, learner_id: str, node_id: str) -> MasteryLevel:
+        return self._current_level(learner_id, node_id)
+
+    def _current_level(self, learner_id: str, node_id: str) -> MasteryLevel:
+        rec = self.store.get_current_mastery(learner_id, node_id)
+        return rec.level if rec else MasteryLevel.UNKNOWN
+
+    def active_override(
+        self,
+        learner_id: str,
+        node_id: Optional[str] = None,
+        now: Optional[datetime] = None,
+    ) -> Optional[DynamicOverride]:
+        """The override currently shaping a node: a node-scoped active
+        override wins; otherwise a global one. ``node_id=None`` matches only
+        global overrides."""
+        now = now or _utcnow()
+        scoped = global_ = None
+        for override in self.store.list_overrides(learner_id):
+            if not override.is_active(now):
+                continue
+            if node_id is not None and override.scope_node_id == node_id:
+                scoped = override
+            elif override.scope_node_id is None:
+                global_ = override
+        return scoped or global_
+
+    def effective_mastery(
+        self, learner_id: str, node_id: str, now: Optional[datetime] = None
+    ) -> MasteryLevel:
+        """Mastery as vertical agents should treat it: an active override
+        (node-scoped, else global) wins; otherwise the latest record."""
+        override = self.active_override(learner_id, node_id, now)
+        if override is not None:
+            return override.level
+        return self._current_level(learner_id, node_id)
+
+    def promote_override(
+        self, learner_id: str, scope_node_id: Optional[str] = None
+    ) -> MasteryRecord:
+        """Promote an active temporary override into a durable assertion."""
+        now = _utcnow()
+        target: Optional[DynamicOverride] = None
+        for override in self.store.list_overrides(learner_id):
+            if override.is_active(now) and override.scope_node_id == scope_node_id:
+                target = override
+                break
+        if target is None:
+            raise ValueError("no active override for that scope to promote")
+        if target.scope_node_id is None:
+            raise ValueError("global overrides cannot be promoted; scope them first")
+        record = self.assert_mastery(
+            learner_id,
+            target.scope_node_id,
+            target.level,
+            asserted_by="override-promotion",
+            reason=f"promoted override {target.id}: {target.reason}",
+        )
+        target.promoted = True
+        self.store.save_override(target)
+        return record
+
+    # --------------------------------------------------------------- internals
+
+    def _write_record(
+        self,
+        learner_id: str,
+        node_id: str,
+        level: MasteryLevel,
+        rule_version: str,
+        params: MasteryParams,
+        evidence_ids: List[str],
+        updated_at: datetime,
+        assertion: bool = False,
+        asserted_by: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> MasteryRecord:
+        record = MasteryRecord(
+            id=_new_id("mr"),
+            node_id=node_id,
+            learner_id=learner_id,
+            level=level,
+            updated_at=updated_at,
+            rule_version=rule_version,
+            params_in_effect=params.as_dict(),
+            evidence_ids=list(evidence_ids),
+            assertion=assertion,
+            asserted_by=asserted_by,
+            reason=reason,
+        )
+        self.store.save_mastery_record(record)
+        return record
