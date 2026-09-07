@@ -41,6 +41,7 @@ from typing import Dict, List, Optional, Tuple
 from .entities import (
     DynamicOverride,
     Evidence,
+    KnowledgeNode,
     MASTERY_SCORES,
     MasteryLevel,
     MasteryParams,
@@ -54,6 +55,15 @@ from .store import StorageBackend
 
 HEURISTIC_VERSION = "heuristic-v1"
 ASSERTION_VERSION = "assertion-v1"
+
+
+def _require_node(graph: KnowledgeGraph, node_id: str) -> KnowledgeNode:
+    """Fetch a node or fail loudly: an unknown node id is a caller bug and
+    must never masquerade as an unevaluated (UNKNOWN) node."""
+    try:
+        return graph.get(node_id)
+    except KeyError:
+        raise ValueError(f"unknown node: {node_id}") from None
 
 
 class MasteryEngine:
@@ -74,7 +84,7 @@ class MasteryEngine:
         nearest ancestor's override (concept, then subject...), else defaults."""
         plan = self.store.get_plan_for_learner(learner_id)
         if plan is not None:
-            node = self.graph.get(node_id)
+            node = _require_node(self.graph, node_id)
             candidates = [node_id] + [a.id for a in self.graph.ancestors(node_id)]
             for cid in candidates:
                 if cid in plan.criteria_overrides:
@@ -89,7 +99,7 @@ class MasteryEngine:
         Returns the MasteryRecords written by this call (possibly empty when
         the evidence does not move mastery). Raises on invalid evidence.
         """
-        node = self.graph.get(evidence.node_id)
+        node = _require_node(self.graph, evidence.node_id)
         if node.level != NodeLevel.TOPIC:
             raise ValueError(
                 f"evidence must target a TOPIC node ({node.id} is {node.level.value}); "
@@ -136,7 +146,10 @@ class MasteryEngine:
         params = self.params_for(learner_id, node_id)
         evidence = sorted(
             self.store.list_evidence(learner_id, node_id),
-            key=lambda e: e.occurred_at,
+            # (occurred_at, id): identical timestamps break ties by id so the
+            # same evidence set always promotes the same way, regardless of
+            # the order verticals submitted it in.
+            key=lambda e: (e.occurred_at, e.id),
         )
         if not evidence:
             return None
@@ -196,7 +209,7 @@ class MasteryEngine:
             level = MasteryLevel(level)
         if level == MasteryLevel.UNKNOWN:
             raise ValueError("cannot assert UNKNOWN")
-        node = self.graph.get(node_id)
+        node = _require_node(self.graph, node_id)
         if node.level != NodeLevel.TOPIC:
             raise ValueError("assertions target TOPIC nodes; higher levels roll up")
         if self.graph.children(node_id):
@@ -284,6 +297,7 @@ class MasteryEngine:
         report their own latest record. Score is None when UNKNOWN.
         Deterministic: score ties round to the lower level.
         """
+        _require_node(self.graph, node_id)  # fail loudly on unknown ids
         override = self.active_override(learner_id, node_id, now)
         if override is not None:
             return override.level, float(MASTERY_SCORES[override.level])
@@ -329,7 +343,7 @@ class MasteryEngine:
         target = max(candidates, key=lambda o: o.created_at)
         if target.scope_node_id is None:
             raise ValueError("global overrides cannot be promoted; scope them first")
-        scope_node = self.graph.get(target.scope_node_id)
+        scope_node = _require_node(self.graph, target.scope_node_id)
         if scope_node.level != NodeLevel.TOPIC or self.graph.children(scope_node.id):
             # assert_mastery would reject this deep inside with a message about
             # "use an override" — which is exactly what we are promoting. Fail

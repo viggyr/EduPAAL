@@ -49,7 +49,12 @@ def _str_to_dt(s: str) -> datetime:
 
 class StorageBackend(Protocol):
     """Persistence contract. Implementations must keep mastery records and
-    evidence append-only so history is never rewritten."""
+    evidence append-only so history is never rewritten.
+
+    Duplicate ids are caller bugs: ``save_evidence`` and
+    ``save_mastery_record`` must raise ``ValueError`` on a duplicate id
+    (never silently replace the existing row).
+    """
 
     # -- learners & preferences --
     def save_learner(self, learner: Learner) -> None: ...
@@ -331,26 +336,30 @@ class SQLiteBackend:
     def save_evidence(self, evidence: Evidence) -> None:
         # Plain INSERT, not OR REPLACE: evidence is append-only, so a duplicate
         # id is a caller bug and must fail loudly instead of silently
-        # overwriting history.
-        self._conn.execute(
-            "INSERT INTO evidence"
-            " (id, learner_id, node_id, source_agent, activity_type, occurred_at,"
-            "  performance, confidence, attempts, hints_used, details)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                evidence.id,
-                evidence.learner_id,
-                evidence.node_id,
-                evidence.source_agent,
-                evidence.activity_type,
-                _dt_to_str(evidence.occurred_at),
-                evidence.performance,
-                evidence.confidence,
-                evidence.attempts,
-                evidence.hints_used,
-                json.dumps(evidence.details),
-            ),
-        )
+        # overwriting history. Surfaced as ValueError (not the backend's
+        # native integrity error) so the contract is backend-agnostic.
+        try:
+            self._conn.execute(
+                "INSERT INTO evidence"
+                " (id, learner_id, node_id, source_agent, activity_type, occurred_at,"
+                "  performance, confidence, attempts, hints_used, details)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    evidence.id,
+                    evidence.learner_id,
+                    evidence.node_id,
+                    evidence.source_agent,
+                    evidence.activity_type,
+                    _dt_to_str(evidence.occurred_at),
+                    evidence.performance,
+                    evidence.confidence,
+                    evidence.attempts,
+                    evidence.hints_used,
+                    json.dumps(evidence.details),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            raise ValueError(f"duplicate evidence id: {evidence.id}") from None
         self._conn.commit()
 
     def get_evidence(self, evidence_id: str) -> Optional[Evidence]:
@@ -395,26 +404,30 @@ class SQLiteBackend:
 
     def save_mastery_record(self, record: MasteryRecord) -> None:
         # Plain INSERT, not OR REPLACE: mastery history is append-only and must
-        # never be rewritten; a duplicate id fails loudly.
-        self._conn.execute(
-            "INSERT INTO mastery_records"
-            " (id, node_id, learner_id, level, updated_at, rule_version,"
-            "  params_in_effect, evidence_ids, assertion, asserted_by, reason)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                record.id,
-                record.node_id,
-                record.learner_id,
-                record.level.value,
-                _dt_to_str(record.updated_at),
-                record.rule_version,
-                json.dumps(record.params_in_effect),
-                json.dumps(record.evidence_ids),
-                int(record.assertion),
-                record.asserted_by,
-                record.reason,
-            ),
-        )
+        # never be rewritten; a duplicate id fails loudly. Backend-agnostic
+        # ValueError, matching the StorageBackend contract.
+        try:
+            self._conn.execute(
+                "INSERT INTO mastery_records"
+                " (id, node_id, learner_id, level, updated_at, rule_version,"
+                "  params_in_effect, evidence_ids, assertion, asserted_by, reason)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record.id,
+                    record.node_id,
+                    record.learner_id,
+                    record.level.value,
+                    _dt_to_str(record.updated_at),
+                    record.rule_version,
+                    json.dumps(record.params_in_effect),
+                    json.dumps(record.evidence_ids),
+                    int(record.assertion),
+                    record.asserted_by,
+                    record.reason,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            raise ValueError(f"duplicate mastery record id: {record.id}") from None
         self._conn.commit()
 
     def get_mastery_history(

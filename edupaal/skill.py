@@ -157,7 +157,10 @@ class EduPAALSkill:
         if level == MasteryLevel.UNKNOWN:
             raise ValueError("cannot override to UNKNOWN")
         if scope_node_id is not None:
-            self.graph.get(scope_node_id)
+            try:
+                self.graph.get(scope_node_id)
+            except KeyError:
+                raise ValueError(f"unknown node: {scope_node_id}") from None
         override = DynamicOverride(
             learner_id=self._require_learner(),
             level=level,
@@ -221,7 +224,10 @@ class EduPAALSkill:
         state, the next specific topic, mastery context for the node, and the
         active override if one is shaping this node."""
         learner_id = self._require_learner()
-        node = self.graph.get(node_id)
+        try:
+            node = self.graph.get(node_id)
+        except KeyError:
+            raise ValueError(f"unknown node: {node_id}") from None
         prefs = self.store.get_preferences(learner_id)
         plan = self.store.get_plan_for_learner(learner_id)
         retriever = self._retriever_for()

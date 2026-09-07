@@ -111,5 +111,8 @@ class Retriever:
                 continue
             if not self._meets_gate(tid):
                 continue
-            return self.graph.get(tid)
+            try:
+                return self.graph.get(tid)
+            except KeyError:
+                raise ValueError(f"plan references unknown node: {tid}") from None
         return None
