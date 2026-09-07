@@ -316,8 +316,11 @@ class SQLiteBackend:
     # -- evidence --
 
     def save_evidence(self, evidence: Evidence) -> None:
+        # Plain INSERT, not OR REPLACE: evidence is append-only, so a duplicate
+        # id is a caller bug and must fail loudly instead of silently
+        # overwriting history.
         self._conn.execute(
-            "INSERT OR REPLACE INTO evidence"
+            "INSERT INTO evidence"
             " (id, learner_id, node_id, source_agent, activity_type, occurred_at,"
             "  performance, confidence, attempts, hints_used, details)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -378,8 +381,10 @@ class SQLiteBackend:
     # -- mastery records --
 
     def save_mastery_record(self, record: MasteryRecord) -> None:
+        # Plain INSERT, not OR REPLACE: mastery history is append-only and must
+        # never be rewritten; a duplicate id fails loudly.
         self._conn.execute(
-            "INSERT OR REPLACE INTO mastery_records"
+            "INSERT INTO mastery_records"
             " (id, node_id, learner_id, level, updated_at, rule_version,"
             "  params_in_effect, evidence_ids, assertion, asserted_by, reason)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

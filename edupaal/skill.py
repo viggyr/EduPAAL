@@ -12,7 +12,7 @@ The skill is bound to one learner (set by ``cold_start``); share one
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from .entities import (
@@ -76,17 +76,25 @@ class EduPAALSkill:
 
         overrides = criteria_overrides or {}
         for oid in overrides:
-            self.graph.get(oid)  # KeyError on unknown node
+            try:
+                self.graph.get(oid)  # unknown node -> clear ValueError
+            except KeyError:
+                raise ValueError(
+                    f"criteria_overrides references unknown node: {oid}"
+                ) from None
 
         self.store.save_learner(Learner(id=learner_id, name=learner_name))
         self.store.save_preferences(learner_id, preferences)
+        existing = self.store.get_plan_for_learner(learner_id)
         plan = LearningPlan(
             id=_new_id("plan"),
             learner_id=learner_id,
             topic_ids=topic_ids,
             criteria_overrides=dict(overrides),
             created_at=_utcnow(),
-            version=1,
+            # re-planning bumps the version so get_plan_for_learner (latest
+            # version wins) stays deterministic
+            version=(existing.version + 1) if existing else 1,
         )
         self.store.save_plan(plan)
         self.learner_id = learner_id
@@ -139,8 +147,6 @@ class EduPAALSkill:
         expires_at: Optional[datetime] = None,
     ) -> DynamicOverride:
         """Set a temporary override. Temporary unless explicitly promoted."""
-        from datetime import timedelta
-
         if isinstance(level, str):
             level = MasteryLevel(level)
         if level == MasteryLevel.UNKNOWN:
@@ -189,7 +195,7 @@ class EduPAALSkill:
     def mastery_history(self, node_id: str) -> List[MasteryRecord]:
         return self.store.get_mastery_history(self._require_learner(), node_id)
 
-    def next_topic(self):
+    def next_topic(self) -> Optional[KnowledgeNode]:
         return self._retriever_for().next_topic()
 
     def strongest(

@@ -1,5 +1,7 @@
 """Retrieval: next_topic gating, rollup, weakest/strongest."""
 
+import pytest
+
 from edupaal import MasteryLevel, NodeLevel
 from tests.conftest import promote_to
 
@@ -106,3 +108,32 @@ def test_grounding_packet_subtopic_ancestors(skill):
     assert [a["id"] for a in mc["ancestors"]] == [
         "dropout", "regularization", "overfitting", "ml", "science",
     ]
+
+
+def test_effective_mastery_rolls_up_non_leaf_nodes(skill):
+    # no direct records can ever exist for a decomposed topic or concept —
+    # effective_mastery must report the rollup, not UNKNOWN
+    assert skill.effective_mastery("regularization") == MasteryLevel.UNKNOWN
+    promote_to(skill, "dropout-rate", "advanced")
+    assert skill.effective_mastery("dropout") == MasteryLevel.ADVANCED
+    assert skill.effective_mastery("regularization") == MasteryLevel.ADVANCED
+    assert skill.effective_mastery("overfitting") == MasteryLevel.ADVANCED
+
+
+def test_grounding_packet_counts_decomposed_plan_topics(skill):
+    # the quickstart-style plan lists "regularization" (decomposed); advancing
+    # its sub-topics must move the plan's advanced_topics count
+    assert skill.grounding_packet("linear-equations")["plan"]["advanced_topics"] == 0
+    promote_to(skill, "l1-l2", "advanced")
+    promote_to(skill, "dropout-rate", "advanced")
+    promote_to(skill, "inverted-dropout", "advanced")
+    packet = skill.grounding_packet("linear-equations")
+    assert packet["plan"]["advanced_topics"] == 1
+    assert packet["plan"]["total_topics"] == 4
+
+
+def test_ranking_rejects_negative_n(skill):
+    with pytest.raises(ValueError):
+        skill.weakest(-1)
+    with pytest.raises(ValueError):
+        skill.strongest(-1, NodeLevel.CONCEPT)

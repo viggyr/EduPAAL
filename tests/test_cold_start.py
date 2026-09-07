@@ -63,3 +63,35 @@ def test_methods_require_cold_start(store, graph):
     skill = EduPAALSkill(store, graph)
     with pytest.raises(ValueError):
         skill.next_topic()
+
+
+def test_recold_start_bumps_plan_version(store, graph, prefs):
+    skill = EduPAALSkill(store, graph)
+    plan1 = skill.cold_start(
+        learner_id="ada",
+        node_selection=["linear-equations"],
+        preferences=prefs,
+    )
+    assert plan1.version == 1
+    plan2 = skill.cold_start(
+        learner_id="ada",
+        node_selection=["linear-equations", "linearization"],
+        preferences=prefs,
+    )
+    assert plan2.version == 2
+    # latest version wins deterministically
+    assert store.get_plan_for_learner("ada").id == plan2.id
+    assert skill.next_topic().id == "linear-equations"
+
+
+def test_cold_start_rejects_unknown_override_node(store, graph, prefs):
+    from edupaal import MasteryParams
+
+    skill = EduPAALSkill(store, graph)
+    with pytest.raises(ValueError, match="unknown node"):
+        skill.cold_start(
+            learner_id="x",
+            node_selection=["linear-equations"],
+            preferences=prefs,
+            criteria_overrides={"nope": MasteryParams()},
+        )

@@ -1,7 +1,21 @@
 """The knobs are real: retuning parameters changes outcomes."""
 
+import pytest
+
 from edupaal import EduPAALSkill, LearnerPreferences, MasteryLevel, MasteryParams
 from tests.conftest import make_evidence, promote_to
+
+
+def test_params_reject_nonsense():
+    with pytest.raises(ValueError):
+        MasteryParams(k_evidence=0)
+    with pytest.raises(ValueError):
+        MasteryParams(window_days=0)
+    for bad in ("t_intermediate", "t_advanced", "t_contradict"):
+        with pytest.raises(ValueError):
+            MasteryParams(**{bad: 1.5})
+        with pytest.raises(ValueError):
+            MasteryParams(**{bad: -0.1})
 
 
 def _fresh_skill(store, graph, prefs, overrides):

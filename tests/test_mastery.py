@@ -58,6 +58,34 @@ def test_contradictory_evidence_blocks_promotion(skill):
     assert skill.effective_mastery("linear-equations") == MasteryLevel.BEGINNER
 
 
+def test_stale_evidence_outside_window_does_not_count(skill):
+    # K=3, W=30d: two strong evidences from 40+ days ago fall outside the
+    # window anchored at the latest evidence, so promotion is blocked even
+    # though 4 strong evidences exist in total
+    skill.record_evidence(make_evidence("linear-equations", 0.95, day=0))
+    skill.record_evidence(make_evidence("linear-equations", 0.95, day=1))
+    skill.record_evidence(make_evidence("linear-equations", 0.95, day=40))
+    records = skill.record_evidence(make_evidence("linear-equations", 0.95, day=41))
+    assert records == []
+    assert skill.effective_mastery("linear-equations") == MasteryLevel.BEGINNER
+
+
+def test_evidence_requires_learner_and_node():
+    from edupaal import Evidence
+    from datetime import datetime, timezone
+
+    for kwargs in (
+        {"learner_id": "", "node_id": "t"},
+        {"learner_id": "l", "node_id": ""},
+    ):
+        with pytest.raises(ValueError):
+            Evidence(
+                id="x", activity_type="quiz", source_agent="a",
+                occurred_at=datetime.now(timezone.utc), performance=0.5,
+                **kwargs,
+            )
+
+
 def test_evidence_must_target_topics(skill):
     with pytest.raises(ValueError):
         skill.record_evidence(make_evidence("algebra", 0.9))

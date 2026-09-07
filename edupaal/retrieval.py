@@ -45,33 +45,13 @@ class Retriever:
     # ---------------------------------------------------------------- rollup
 
     def rollup(self, node_id: str) -> Tuple[MasteryLevel, Optional[float]]:
-        """(level, mean_score) for any node at any depth. Score is None when
-        UNKNOWN. Nodes with children aggregate their children; leaves report
-        their own effective mastery; an explicit override on the node wins."""
-        node = self.graph.get(node_id)
-        children = self.graph.children(node_id)
-        if not children:
-            level = self.engine.effective_mastery(self.learner_id, node_id)
-            if level == MasteryLevel.UNKNOWN:
-                return MasteryLevel.UNKNOWN, None
-            return level, float(MASTERY_SCORES[level])
+        """(level, mean_score) for any node at any depth.
 
-        override = self.engine.active_override(self.learner_id, node_id)
-        if override is not None:
-            return override.level, float(MASTERY_SCORES[override.level])
-
-        scores: List[float] = []
-        for child in children:
-            _, s = self.rollup(child.id)
-            if s is not None:
-                scores.append(s)
-        if not scores:
-            return MasteryLevel.UNKNOWN, None
-        mean = sum(scores) / len(scores)
-        nearest = min(
-            MASTERY_SCORES.items(), key=lambda kv: (abs(kv[1] - mean), kv[1])
-        )[0]
-        return nearest, mean
+        Delegates to the engine so leaf reads, override precedence, and
+        aggregation live in exactly one place. Score is None when UNKNOWN.
+        Nodes with children aggregate their children; leaves report their own
+        effective mastery; an explicit override on the node wins."""
+        return self.engine.rolled_up_mastery(self.learner_id, node_id)
 
     # ---------------------------------------------------------------- ranking
 
@@ -86,6 +66,8 @@ class Retriever:
         """Bottom-N nodes. UNKNOWN (-1) sorts below BEGINNER (0)."""
         if isinstance(level, str):
             level = NodeLevel(level)
+        if n < 0:
+            raise ValueError("n must be >= 0")
 
         def key(item: RankedNode) -> tuple:
             node, lvl, score = item
@@ -95,6 +77,8 @@ class Retriever:
 
     def strongest(self, n: int, level: NodeLevel = NodeLevel.TOPIC) -> List[RankedNode]:
         """Top-N nodes. UNKNOWN nodes are excluded."""
+        if n < 0:
+            raise ValueError("n must be >= 0")
 
         def key(item: RankedNode) -> tuple:
             node, _lvl, score = item

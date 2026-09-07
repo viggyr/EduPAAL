@@ -36,11 +36,12 @@ decision can be replayed and explained.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .entities import (
     DynamicOverride,
     Evidence,
+    MASTERY_SCORES,
     MasteryLevel,
     MasteryParams,
     MasteryRecord,
@@ -219,6 +220,11 @@ class MasteryEngine:
     # -------------------------------------------------------------- resolve
 
     def current_level(self, learner_id: str, node_id: str) -> MasteryLevel:
+        """The node's own latest record: leaf-level, no rollup, no overrides.
+
+        For aggregated views (concepts, subjects, decomposed topics) use
+        ``effective_mastery`` / ``rolled_up_mastery`` instead."""
+
         return self._current_level(learner_id, node_id)
 
     def _current_level(self, learner_id: str, node_id: str) -> MasteryLevel:
@@ -249,11 +255,46 @@ class MasteryEngine:
         self, learner_id: str, node_id: str, now: Optional[datetime] = None
     ) -> MasteryLevel:
         """Mastery as vertical agents should treat it: an active override
-        (node-scoped, else global) wins; otherwise the latest record."""
+        (node-scoped, else global) wins; otherwise mastery rolls up the full
+        chain below the node. Leaf nodes report their own latest record, so
+        for leaf TOPIC nodes this is exactly the record history; for
+        concepts/subjects/spaces (and decomposed topics) it is the rollup —
+        never UNKNOWN-just-because-no-direct-record-exists."""
+        return self.rolled_up_mastery(learner_id, node_id, now)[0]
+
+    def rolled_up_mastery(
+        self, learner_id: str, node_id: str, now: Optional[datetime] = None
+    ) -> Tuple[MasteryLevel, Optional[float]]:
+        """(level, mean_score) for any node at any depth, with full-chain
+        rollup: sub-topic -> ... -> topic -> concept -> subject -> space.
+
+        An explicit active override on the node always wins. Nodes with
+        children report the mean of their children's scores (UNKNOWN children
+        excluded; a node with no evaluated children is UNKNOWN). Leaf nodes
+        report their own latest record. Score is None when UNKNOWN.
+        Deterministic: score ties round to the lower level.
+        """
         override = self.active_override(learner_id, node_id, now)
         if override is not None:
-            return override.level
-        return self._current_level(learner_id, node_id)
+            return override.level, float(MASTERY_SCORES[override.level])
+        children = self.graph.children(node_id)
+        if not children:
+            level = self._current_level(learner_id, node_id)
+            if level == MasteryLevel.UNKNOWN:
+                return MasteryLevel.UNKNOWN, None
+            return level, float(MASTERY_SCORES[level])
+        scores: List[float] = []
+        for child in children:
+            _, s = self.rolled_up_mastery(learner_id, child.id, now)
+            if s is not None:
+                scores.append(s)
+        if not scores:
+            return MasteryLevel.UNKNOWN, None
+        mean = sum(scores) / len(scores)
+        nearest = min(
+            MASTERY_SCORES.items(), key=lambda kv: (abs(kv[1] - mean), kv[1])
+        )[0]
+        return nearest, mean
 
     def promote_override(
         self, learner_id: str, scope_node_id: Optional[str] = None
@@ -269,6 +310,17 @@ class MasteryEngine:
             raise ValueError("no active override for that scope to promote")
         if target.scope_node_id is None:
             raise ValueError("global overrides cannot be promoted; scope them first")
+        scope_node = self.graph.get(target.scope_node_id)
+        if scope_node.level != NodeLevel.TOPIC or self.graph.children(scope_node.id):
+            # assert_mastery would reject this deep inside with a message about
+            # "use an override" — which is exactly what we are promoting. Fail
+            # here instead, with the actual reason.
+            raise ValueError(
+                f"cannot promote override on {scope_node.id} "
+                f"({scope_node.level.value}): promotion writes a leaf-topic "
+                "assertion, and only leaf TOPIC nodes can carry one; keep the "
+                "temporary override instead"
+            )
         record = self.assert_mastery(
             learner_id,
             target.scope_node_id,

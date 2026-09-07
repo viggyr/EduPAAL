@@ -96,3 +96,13 @@ def test_assert_unknown_rejected(skill):
             "linear-equations", MasteryLevel.UNKNOWN,
             asserted_by="x", reason="y",
         )
+
+
+def test_promote_override_on_decomposed_topic_fails_clearly(skill):
+    skill.set_override(
+        MasteryLevel.INTERMEDIATE,
+        reason="teacher confirms",
+        scope_node_id="dropout",  # decomposed: cannot carry a leaf assertion
+    )
+    with pytest.raises(ValueError, match="only leaf TOPIC nodes"):
+        skill.promote_override("dropout")

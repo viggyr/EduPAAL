@@ -190,6 +190,10 @@ class Evidence:
     details: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not self.learner_id:
+            raise ValueError("learner_id is required")
+        if not self.node_id:
+            raise ValueError("node_id is required")
         if not self.source_agent:
             raise ValueError("source_agent is required")
         if not self.activity_type:

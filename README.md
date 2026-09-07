@@ -60,8 +60,11 @@ Four fixed upper levels: `Space → Subject → Concept → Topic`. Topics are
 Mastery rolls up the full chain — sub-topic → … → topic → concept → subject →
 space. Any node *with children* reports the mean of its children's scores
 (`Unknown` children excluded); leaves report their own mastery; an explicit
-override on a node always wins. Evidence attaches at the **finest-grained node
-available** by convention.
+override on a node always wins. `effective_mastery()` applies the same rollup,
+so asking for a concept's mastery never returns `Unknown` merely because no
+direct record exists. Evidence and `assert_mastery()` **must** target leaf
+TOPIC nodes — the engine rejects anything else outright; higher levels are
+pure rollup.
 
 This package ships an exemplar graph (`edupaal.seed`: Science → Maths/ML →
 Algebra/Overfitting → topics including a two-level decomposition under
