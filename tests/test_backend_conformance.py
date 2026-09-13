@@ -18,6 +18,7 @@ import pytest
 from edupaal import (
     DynamicOverride,
     Evidence,
+    ExtractedMemory,
     KnowledgeNode,
     Learner,
     LearnerPreferences,
@@ -255,6 +256,22 @@ def _override(ovr_id, day=0, scope="topic-1", **kw):
     return DynamicOverride(**params)
 
 
+def _xmem(xm_id, day=0, **kw):
+    params = dict(
+        id=xm_id,
+        learner_id="learner-1",
+        kind="observed_preference",
+        content="prefers worked examples ✓",
+        provenance=["message-0", "message-1"],
+        node_id=None,
+        confidence=0.7,
+        evidence_count=2,
+        created_at=BASE + timedelta(days=day),
+    )
+    params.update(kw)
+    return ExtractedMemory(**params)
+
+
 # ---------------------------------------------------------------------------
 # conformance battery — identical assertions for every backend
 # ---------------------------------------------------------------------------
@@ -410,6 +427,7 @@ def test_records_survive_reopen(make_backend, tmp_path, monkeypatch):
     first.save_evidence(_evidence("ev-1"))
     first.save_mastery_record(_mastery("mr-1"))
     first.save_override(_override("ovr-1"))
+    first.save_extracted_memory(_xmem("xm-1"))
     first.save_plan(
         LearningPlan(id="p1", learner_id="l1", topic_ids=["t1"], created_at=BASE)
     )
@@ -424,4 +442,79 @@ def test_records_survive_reopen(make_backend, tmp_path, monkeypatch):
     assert second.get_evidence("ev-1") == _evidence("ev-1")
     assert second.get_current_mastery("learner-1", "topic-1") == _mastery("mr-1")
     assert [o.id for o in second.list_overrides("learner-1")] == ["ovr-1"]
+    assert second.get_extracted_memory("xm-1") == _xmem("xm-1")
     assert second.get_plan("p1").topic_ids == ["t1"]
+
+
+def test_extracted_memory_crud_and_filters(backend):
+    """ADR 0001: the extracted layer stores LLM-derived memories verbatim.
+
+    Saves are upserts (re-derivable, not append-only); listing supports
+    learner/node/kind filters and orders by (created_at, id).
+    """
+    assert backend.get_extracted_memory("ghost") is None
+    m1 = _xmem("xm-1", day=0, kind="learning_style", node_id="topic-1")
+    m2 = _xmem("xm-2", day=1, kind="observed_preference", node_id="topic-1")
+    m3 = _xmem("xm-3", day=2, kind="learning_style", node_id=None)
+    for m in (m1, m2, m3):
+        backend.save_extracted_memory(m)
+
+    assert backend.get_extracted_memory("xm-1") == m1
+    assert backend.get_extracted_memory("ghost") is None
+    # ordered by (created_at, id), like evidence
+    assert [m.id for m in backend.list_extracted_memories("learner-1")] == [
+        "xm-1", "xm-2", "xm-3",
+    ]
+    assert [
+        m.id
+        for m in backend.list_extracted_memories("learner-1", node_id="topic-1")
+    ] == ["xm-1", "xm-2"]
+    assert [
+        m.id
+        for m in backend.list_extracted_memories(
+            "learner-1", kind="learning_style"
+        )
+    ] == ["xm-1", "xm-3"]
+    assert [
+        m.id
+        for m in backend.list_extracted_memories(
+            "learner-1", node_id="topic-1", kind="observed_preference"
+        )
+    ] == ["xm-2"]
+    assert backend.list_extracted_memories("other-learner") == []
+
+    # upsert semantics: re-extraction replaces the previous inference
+    m1b = _xmem(
+        "xm-1", day=5, kind="learning_style", node_id="topic-1",
+        content="updated inference ✓",
+    )
+    backend.save_extracted_memory(m1b)
+    assert backend.get_extracted_memory("xm-1") == m1b
+
+    backend.delete_extracted_memory("xm-2")
+    assert backend.get_extracted_memory("xm-2") is None
+    assert [m.id for m in backend.list_extracted_memories("learner-1")] == [
+        "xm-3", "xm-1",
+    ]
+    # deleting a missing memory is a no-op, not an error
+    backend.delete_extracted_memory("xm-2")
+    backend.delete_extracted_memory("ghost")
+
+
+def test_extracted_memory_validation():
+    with pytest.raises(ValueError):
+        ExtractedMemory(learner_id="", kind="k", content="c")
+    with pytest.raises(ValueError):
+        ExtractedMemory(learner_id="l", kind="", content="c")
+    with pytest.raises(ValueError):
+        ExtractedMemory(learner_id="l", kind="k", content="")
+    with pytest.raises(ValueError):
+        ExtractedMemory(learner_id="l", kind="k", content="c", confidence=1.5)
+    with pytest.raises(ValueError):
+        ExtractedMemory(learner_id="l", kind="k", content="c", evidence_count=0)
+    # naive datetimes are treated as UTC, like Evidence
+    m = ExtractedMemory(
+        learner_id="l", kind="k", content="c",
+        created_at=datetime(2026, 9, 1),
+    )
+    assert m.created_at.tzinfo is not None

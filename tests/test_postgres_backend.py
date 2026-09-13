@@ -35,6 +35,7 @@ _TABLES = (
     "evidence",
     "mastery_records",
     "overrides",
+    "extracted_memories",
 )
 
 
@@ -152,6 +153,55 @@ def test_override_crud(pg_store):
     assert len(pg_store.list_overrides("l1")) == 1
     pg_store.delete_override(ovr.id)
     assert pg_store.list_overrides("l1") == []
+
+
+def test_extracted_memory_crud_and_filters(pg_store):
+    """ADR 0001: extracted layer on Postgres — upsert saves, filtered lists,
+    ordered by (created_at, id), exact round trip."""
+    from edupaal import ExtractedMemory
+
+    def xm(xm_id, day, kind="observed_preference", node_id=None):
+        return ExtractedMemory(
+            id=xm_id,
+            learner_id="l1",
+            kind=kind,
+            content=f"inference {xm_id} ✓",
+            provenance=["message-0"],
+            node_id=node_id,
+            confidence=0.8,
+            evidence_count=2,
+            created_at=BASE + timedelta(days=day),
+        )
+
+    pg_store.save_extracted_memory(xm("xm-1", 0, "learning_style", "t1"))
+    pg_store.save_extracted_memory(xm("xm-2", 1, "observed_preference", "t1"))
+    pg_store.save_extracted_memory(xm("xm-3", 2, "learning_style"))
+
+    assert pg_store.get_extracted_memory("xm-1") == xm(
+        "xm-1", 0, "learning_style", "t1"
+    )
+    assert pg_store.get_extracted_memory("ghost") is None
+    assert [m.id for m in pg_store.list_extracted_memories("l1")] == [
+        "xm-1", "xm-2", "xm-3",
+    ]
+    assert [
+        m.id for m in pg_store.list_extracted_memories("l1", node_id="t1")
+    ] == ["xm-1", "xm-2"]
+    assert [
+        m.id
+        for m in pg_store.list_extracted_memories("l1", kind="learning_style")
+    ] == ["xm-1", "xm-3"]
+    assert pg_store.list_extracted_memories("nobody") == []
+
+    # upsert: re-extraction replaces
+    pg_store.save_extracted_memory(xm("xm-1", 5, "learning_style", "t1"))
+    assert pg_store.get_extracted_memory("xm-1").created_at == BASE + timedelta(
+        days=5
+    )
+
+    pg_store.delete_extracted_memory("xm-2")
+    assert pg_store.get_extracted_memory("xm-2") is None
+    pg_store.delete_extracted_memory("ghost")  # no-op
 
 
 def test_duplicate_evidence_id_fails_loud(pg_store):

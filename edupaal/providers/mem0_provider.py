@@ -58,6 +58,7 @@ os.environ.setdefault("MEM0_TELEMETRY", "False")
 from ..entities import (
     DynamicOverride,
     Evidence,
+    ExtractedMemory,
     KnowledgeNode,
     Learner,
     LearnerPreferences,
@@ -397,6 +398,37 @@ class Mem0Provider:
 
     def delete_override(self, override_id: str) -> None:
         item = self._find(R.KIND_OVERRIDE, override_id)
+        if item is not None:
+            self._memory.delete(item["id"])
+
+    # -- extracted memories (ADR 0001) --
+    # Already-extracted text is stored verbatim like every other record;
+    # the provider never runs extraction itself (see edupaal/extraction.py).
+
+    def save_extracted_memory(self, memory: ExtractedMemory) -> None:
+        kind, record_id, record = R.to_record(memory)
+        self._replace(kind, record_id, record, memory)
+
+    def get_extracted_memory(self, memory_id: str) -> Optional[ExtractedMemory]:
+        item = self._find(R.KIND_EXTRACTED_MEMORY, memory_id)
+        return self._read_item(item) if item else None
+
+    def list_extracted_memories(
+        self,
+        learner_id: str,
+        node_id: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> List[ExtractedMemory]:
+        items = self._scan(
+            R.KIND_EXTRACTED_MEMORY, learner_id=learner_id, node_id=node_id
+        )
+        memories = [self._read_item(item) for item in items]
+        if kind is not None:
+            memories = [m for m in memories if m.kind == kind]
+        return sorted(memories, key=lambda m: (m.created_at, m.id))
+
+    def delete_extracted_memory(self, memory_id: str) -> None:
+        item = self._find(R.KIND_EXTRACTED_MEMORY, memory_id)
         if item is not None:
             self._memory.delete(item["id"])
 

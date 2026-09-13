@@ -267,3 +267,52 @@ class DynamicOverride:
         if now.tzinfo is None:
             now = now.replace(tzinfo=timezone.utc)
         return not self.promoted and now < self.expires_at
+
+
+@dataclass
+class ExtractedMemory:
+    """One LLM-derived memory about a learner: learning style or observed
+    preference (ADR 0001, the extracted layer).
+
+    Unlike canonical records, these are *interpretive*: an LLM summarized
+    them from interactions, so they are lossy and non-deterministic. They
+    are explicitly non-authoritative and advisory-only — the mastery engine
+    and retrieval never read them; vertical agents may use them to tune
+    *how* material is presented, never *what* the learner's mastery is.
+
+    ``kind`` is a free-form string (e.g. "learning_style",
+    "observed_preference") — EduPAAL does not impose a taxonomy; vertical
+    agents interpret it. ``provenance`` records the source interactions the
+    memory was extracted from, so a bad inference stays traceable.
+    ``evidence_count`` guards against thin-evidence trait hallucination: an
+    inference drawn from a single offhand comment should not crystallize
+    into a permanent trait.
+
+    Storage semantics: derived data is re-derivable, so ``save`` is an
+    upsert (re-extraction replaces), unlike the append-only evidence and
+    mastery history.
+    """
+
+    learner_id: str
+    kind: str
+    content: str
+    provenance: List[str] = field(default_factory=list)
+    node_id: Optional[str] = None  # topic this memory is about, if any
+    confidence: Optional[float] = None  # extractor's self-assessed trust in [0, 1]
+    evidence_count: int = 1  # interactions supporting this inference
+    created_at: datetime = field(default_factory=_utcnow)
+    id: str = field(default_factory=lambda: _new_id("xm"))
+
+    def __post_init__(self) -> None:
+        if not self.learner_id:
+            raise ValueError("learner_id is required")
+        if not self.kind:
+            raise ValueError("kind is required")
+        if not self.content:
+            raise ValueError("content is required")
+        if self.confidence is not None and not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("confidence must be within [0, 1]")
+        if self.evidence_count < 1:
+            raise ValueError("evidence_count must be >= 1")
+        if self.created_at.tzinfo is None:
+            self.created_at = self.created_at.replace(tzinfo=timezone.utc)

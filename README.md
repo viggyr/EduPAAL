@@ -135,6 +135,28 @@ ids (the EduPAAL id lives in metadata and record text); MemOS persists via
 `dump()`/`load()` with no transactional locking. None of the providers change
 what the framework computes — they only change where the records live.
 
+### Extracted layer (ADR 0001)
+
+Alongside the canonical store, every backend persists **extracted memories**
+(`ExtractedMemory`): LLM-derived learning-style / observed-preference notes
+that are explicitly **advisory-only and non-authoritative**. They are stored
+verbatim with provenance (source interaction ids) and an evidence count, and
+saves are **upserts** — re-extraction replaces the previous inference, unlike
+the append-only evidence and mastery history.
+
+The boundary is enforced, not just documented: the mastery engine and
+retrieval never read extracted memories (`tests/test_extracted_advisory.py`
+asserts identical mastery with and without adversarial memories present, and
+statically that `mastery.py`/`retrieval.py`/`graph.py`/`skill.py` never
+reference the layer). Vertical agents may use them to tune *how* material is
+presented, never *what* the learner's mastery is.
+
+`edupaal/extraction.py` is the one place that *runs* extraction: it drives
+Mem0's `Memory.add(..., infer=True)` over interaction messages. Extraction
+namespaces are learner-scoped (`edupaal:{learner_id}`) by default, and each
+extracted item gets a deterministic id derived from the extraction inputs, so
+re-running over the same interactions replaces rather than duplicates.
+
 ```bash
 pip install "edupaal[mem0-provider]"    # or "edupaal[memos-provider]", or "edupaal[all-providers]"
 python -c "

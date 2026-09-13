@@ -137,6 +137,17 @@ class MasteryEngine:
             if nxt is None:
                 break
             written.append(nxt)
+            # Fail-loud termination guard: a promotion write must advance the
+            # observable level. Records are ordered by (updated_at, rowid) and
+            # _try_promote stamps max(evidence time, now), so a freshly written
+            # record always sorts last. If the level did not move, re-looping
+            # would spin forever writing duplicates — surface the ordering
+            # violation instead of hanging.
+            if self._current_level(evidence.learner_id, evidence.node_id) == level:
+                raise RuntimeError(
+                    f"promotion to {nxt.level.value} did not advance "
+                    f"{evidence.node_id} past {level.value}; refusing to loop"
+                )
 
         return written
 
@@ -179,6 +190,13 @@ class MasteryEngine:
         ):
             return None
 
+        # Stamp the later of the evidence anchor and now. Evidence-driven
+        # records keep evidence-logical time when the evidence is current
+        # (replay stays deterministic), but a record computed *now* must never
+        # sort before a wall-clock assertion written earlier: records are
+        # ordered by (updated_at, rowid), and a promotion that does not become
+        # current would make the fixed-point loop in record_evidence spin
+        # forever writing duplicates.
         return self._write_record(
             learner_id,
             node_id,
@@ -186,7 +204,7 @@ class MasteryEngine:
             HEURISTIC_VERSION,
             params,
             [e.id for e in candidates],
-            updated_at=anchor,
+            updated_at=max(anchor, _utcnow()),
         )
 
     # --------------------------------------------------------------- assert

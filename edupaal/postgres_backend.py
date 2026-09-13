@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 from .entities import (
     DynamicOverride,
     Evidence,
+    ExtractedMemory,
     KnowledgeNode,
     Learner,
     LearnerPreferences,
@@ -127,6 +128,22 @@ CREATE TABLE IF NOT EXISTS overrides (
     reason TEXT NOT NULL DEFAULT '',
     promoted BOOLEAN NOT NULL DEFAULT FALSE
 );
+-- ADR 0001: the extracted layer. LLM-derived, non-authoritative,
+-- advisory-only. Re-derivable, so saves are upserts, not append-only;
+-- never read by the mastery engine or retrieval.
+CREATE TABLE IF NOT EXISTS extracted_memories (
+    id TEXT PRIMARY KEY,
+    learner_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    content TEXT NOT NULL,
+    provenance TEXT NOT NULL DEFAULT '[]',
+    node_id TEXT,
+    confidence DOUBLE PRECISION,
+    evidence_count INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_xmem_learner
+    ON extracted_memories (learner_id);
 """
 
 
@@ -481,6 +498,83 @@ class PostgresBackend:
 
     def delete_override(self, override_id: str) -> None:
         self._conn.execute("DELETE FROM overrides WHERE id = %s", (override_id,))
+
+    # -- extracted memories (ADR 0001) --
+
+    def save_extracted_memory(self, memory: ExtractedMemory) -> None:
+        # Upsert, not append-only: extracted memories are re-derivable, so
+        # re-extraction legitimately replaces a previous inference.
+        self._conn.execute(
+            "INSERT INTO extracted_memories"
+            " (id, learner_id, kind, content, provenance, node_id,"
+            "  confidence, evidence_count, created_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " ON CONFLICT (id) DO UPDATE SET"
+            " learner_id = EXCLUDED.learner_id,"
+            " kind = EXCLUDED.kind,"
+            " content = EXCLUDED.content,"
+            " provenance = EXCLUDED.provenance,"
+            " node_id = EXCLUDED.node_id,"
+            " confidence = EXCLUDED.confidence,"
+            " evidence_count = EXCLUDED.evidence_count,"
+            " created_at = EXCLUDED.created_at",
+            (
+                memory.id,
+                memory.learner_id,
+                memory.kind,
+                memory.content,
+                json.dumps(memory.provenance),
+                memory.node_id,
+                memory.confidence,
+                memory.evidence_count,
+                _ensure_aware(memory.created_at),
+            ),
+        )
+
+    def get_extracted_memory(self, memory_id: str) -> Optional[ExtractedMemory]:
+        row = self._conn.execute(
+            "SELECT * FROM extracted_memories WHERE id = %s", (memory_id,)
+        ).fetchone()
+        return self._row_to_xmem(row) if row else None
+
+    def list_extracted_memories(
+        self,
+        learner_id: str,
+        node_id: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> List[ExtractedMemory]:
+        query = "SELECT * FROM extracted_memories WHERE learner_id = %s"
+        params: List[Any] = [learner_id]
+        if node_id is not None:
+            query += " AND node_id = %s"
+            params.append(node_id)
+        if kind is not None:
+            query += " AND kind = %s"
+            params.append(kind)
+        query += " ORDER BY created_at, id"
+        rows = self._conn.execute(query, params).fetchall()
+        return [self._row_to_xmem(r) for r in rows]
+
+    def delete_extracted_memory(self, memory_id: str) -> None:
+        # Deleting a missing memory is a no-op, not an error (mirrors
+        # delete_override).
+        self._conn.execute(
+            "DELETE FROM extracted_memories WHERE id = %s", (memory_id,)
+        )
+
+    @staticmethod
+    def _row_to_xmem(row: Dict[str, Any]) -> ExtractedMemory:
+        return ExtractedMemory(
+            id=row["id"],
+            learner_id=row["learner_id"],
+            kind=row["kind"],
+            content=row["content"],
+            provenance=json.loads(row["provenance"]),
+            node_id=row["node_id"],
+            confidence=row["confidence"],
+            evidence_count=row["evidence_count"],
+            created_at=_ensure_aware(row["created_at"]),
+        )
 
     def close(self) -> None:
         self._conn.close()

@@ -19,6 +19,7 @@ from typing import Any, Dict, Tuple
 from ..entities import (
     DynamicOverride,
     Evidence,
+    ExtractedMemory,
     KnowledgeNode,
     Learner,
     LearnerPreferences,
@@ -40,6 +41,7 @@ KIND_PLAN = "plan"
 KIND_EVIDENCE = "evidence"
 KIND_MASTERY_RECORD = "mastery_record"
 KIND_OVERRIDE = "override"
+KIND_EXTRACTED_MEMORY = "extracted_memory"
 
 
 def _dt_to_str(dt: datetime) -> str:
@@ -133,6 +135,24 @@ def to_record(entity: Any) -> Tuple[str, str, Dict[str, Any]]:
             "promoted": entity.promoted,
         }
         return KIND_OVERRIDE, entity.id, _envelope(KIND_OVERRIDE, entity.id, data)
+    if isinstance(entity, ExtractedMemory):
+        # ADR 0001: extracted memories are stored verbatim like every other
+        # record — the provider persists already-extracted text; it never
+        # runs extraction itself.
+        data = {
+            "id": entity.id,
+            "learner_id": entity.learner_id,
+            "kind": entity.kind,
+            "content": entity.content,
+            "provenance": entity.provenance,
+            "node_id": entity.node_id,
+            "confidence": entity.confidence,
+            "evidence_count": entity.evidence_count,
+            "created_at": _dt_to_str(entity.created_at),
+        }
+        return KIND_EXTRACTED_MEMORY, entity.id, _envelope(
+            KIND_EXTRACTED_MEMORY, entity.id, data
+        )
     raise TypeError(f"unsupported entity type: {type(entity).__name__}")
 
 
@@ -245,5 +265,17 @@ def from_record(record: Dict[str, Any]) -> Any:
             created_at=_str_to_dt(data["created_at"]),
             reason=data["reason"],
             promoted=data["promoted"],
+        )
+    if kind == KIND_EXTRACTED_MEMORY:
+        return ExtractedMemory(
+            id=data["id"],
+            learner_id=data["learner_id"],
+            kind=data["kind"],
+            content=data["content"],
+            provenance=data["provenance"],
+            node_id=data["node_id"],
+            confidence=data["confidence"],
+            evidence_count=data["evidence_count"],
+            created_at=_str_to_dt(data["created_at"]),
         )
     raise ValueError(f"unknown record kind: {kind!r}")

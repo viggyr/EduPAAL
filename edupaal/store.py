@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Protocol
 from .entities import (
     DynamicOverride,
     Evidence,
+    ExtractedMemory,
     KnowledgeNode,
     Learner,
     LearnerPreferences,
@@ -94,6 +95,20 @@ class StorageBackend(Protocol):
     def save_override(self, override: DynamicOverride) -> None: ...
     def list_overrides(self, learner_id: str) -> List[DynamicOverride]: ...
     def delete_override(self, override_id: str) -> None: ...
+
+    # -- extracted memories (ADR 0001: the extracted layer) --
+    # LLM-derived, non-authoritative, advisory-only: the mastery engine and
+    # retrieval never read these. Derived data is re-derivable, so saves
+    # are upserts (re-extraction replaces); nothing here is append-only.
+    def save_extracted_memory(self, memory: ExtractedMemory) -> None: ...
+    def get_extracted_memory(self, memory_id: str) -> Optional[ExtractedMemory]: ...
+    def list_extracted_memories(
+        self,
+        learner_id: str,
+        node_id: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> List[ExtractedMemory]: ...
+    def delete_extracted_memory(self, memory_id: str) -> None: ...
 
 
 class SQLiteBackend:
@@ -178,6 +193,22 @@ class SQLiteBackend:
                 reason TEXT NOT NULL DEFAULT '',
                 promoted INTEGER NOT NULL DEFAULT 0
             );
+            -- ADR 0001: the extracted layer. LLM-derived, non-authoritative,
+            -- advisory-only. Re-derivable, so saves are upserts, not
+            -- append-only; never read by the mastery engine or retrieval.
+            CREATE TABLE IF NOT EXISTS extracted_memories (
+                id TEXT PRIMARY KEY,
+                learner_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                content TEXT NOT NULL,
+                provenance TEXT NOT NULL DEFAULT '[]',
+                node_id TEXT,
+                confidence REAL,
+                evidence_count INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_xmem_learner
+                ON extracted_memories (learner_id);
             """
         )
         # Lightweight migration for databases created before created_at
@@ -510,6 +541,76 @@ class SQLiteBackend:
     def delete_override(self, override_id: str) -> None:
         self._conn.execute("DELETE FROM overrides WHERE id = ?", (override_id,))
         self._conn.commit()
+
+    # -- extracted memories (ADR 0001) --
+
+    def save_extracted_memory(self, memory: ExtractedMemory) -> None:
+        # Upsert, not append-only: extracted memories are re-derivable, so
+        # re-extraction legitimately replaces a previous inference.
+        self._conn.execute(
+            "INSERT OR REPLACE INTO extracted_memories"
+            " (id, learner_id, kind, content, provenance, node_id,"
+            "  confidence, evidence_count, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                memory.id,
+                memory.learner_id,
+                memory.kind,
+                memory.content,
+                json.dumps(memory.provenance),
+                memory.node_id,
+                memory.confidence,
+                memory.evidence_count,
+                _dt_to_str(memory.created_at),
+            ),
+        )
+        self._conn.commit()
+
+    def get_extracted_memory(self, memory_id: str) -> Optional[ExtractedMemory]:
+        row = self._conn.execute(
+            "SELECT * FROM extracted_memories WHERE id = ?", (memory_id,)
+        ).fetchone()
+        return self._row_to_xmem(row) if row else None
+
+    def list_extracted_memories(
+        self,
+        learner_id: str,
+        node_id: Optional[str] = None,
+        kind: Optional[str] = None,
+    ) -> List[ExtractedMemory]:
+        query = "SELECT * FROM extracted_memories WHERE learner_id = ?"
+        params: List[Any] = [learner_id]
+        if node_id is not None:
+            query += " AND node_id = ?"
+            params.append(node_id)
+        if kind is not None:
+            query += " AND kind = ?"
+            params.append(kind)
+        query += " ORDER BY created_at, id"
+        rows = self._conn.execute(query, params).fetchall()
+        return [self._row_to_xmem(r) for r in rows]
+
+    def delete_extracted_memory(self, memory_id: str) -> None:
+        # Deleting a missing memory is a no-op, not an error (mirrors
+        # delete_override).
+        self._conn.execute(
+            "DELETE FROM extracted_memories WHERE id = ?", (memory_id,)
+        )
+        self._conn.commit()
+
+    @staticmethod
+    def _row_to_xmem(row: sqlite3.Row) -> ExtractedMemory:
+        return ExtractedMemory(
+            id=row["id"],
+            learner_id=row["learner_id"],
+            kind=row["kind"],
+            content=row["content"],
+            provenance=json.loads(row["provenance"]),
+            node_id=row["node_id"],
+            confidence=row["confidence"],
+            evidence_count=row["evidence_count"],
+            created_at=_str_to_dt(row["created_at"]),
+        )
 
     def close(self) -> None:
         self._conn.close()
