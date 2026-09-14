@@ -19,10 +19,12 @@ The characterized contract:
 """
 
 from edupaal import (
+    MASTERY_SCORES,
     EduPAALSkill,
     LearnerPreferences,
     MasteryLevel,
     MasteryParams,
+    QuorumFn,
     SQLiteBackend,
     aggregate_vertical_mastery,
     build_seed_graph,
@@ -118,12 +120,17 @@ def _vskill(
     vertical_params=None,
     default_params=None,
     criteria_overrides=None,
+    quorum_fn=None,
 ):
-    """vb_skill plus vertical params / plan overrides."""
+    """vb_skill plus vertical params / plan overrides / custom quorum."""
     graph = build_seed_graph()
     store = SQLiteBackend(tmp_path / f"{learner_id}.db")
     skill = EduPAALSkill(
-        store, graph, default_params=default_params, vertical_params=vertical_params
+        store,
+        graph,
+        default_params=default_params,
+        vertical_params=vertical_params,
+        quorum_fn=quorum_fn,
     )
     skill.cold_start(
         learner_id=learner_id,
@@ -436,3 +443,98 @@ def test_old_schema_migration_assigns_default_vertical(tmp_path):
     # the migrated record reads as the default vertical's current level
     current = store.get_current_mastery("legacy-learner", NODE, "default")
     assert current is not None and current.level == MasteryLevel.INTERMEDIATE
+
+
+# ------------------------------------------------------- custom quorum logic
+
+
+def _max_rule(levels, params):
+    """A deployment's own transfer rule: the strongest track wins, no
+    cross-vertical confirmation required."""
+    attested = [l for l in levels.values() if l != U]
+    if not attested:
+        return U
+    return max(attested, key=lambda l: MASTERY_SCORES[l])
+
+
+def _consensus_rule(levels, params):
+    """A stricter custom rule: ADVANCED only when every attested vertical
+    confirms it — but the confirmation count still comes from the shared
+    knob, so deployments keep tuning the dial without rewriting the rule."""
+    attested = [l for l in levels.values() if l != U]
+    if not attested:
+        return U
+    n_adv = sum(1 for l in attested if l == A)
+    if n_adv >= params.xvertical_quorum_advanced and n_adv == len(attested):
+        return A
+    if n_adv:
+        return I  # partial confirmation: real signal, no transfer
+    return max(attested, key=lambda l: MASTERY_SCORES[l])
+
+
+def test_custom_quorum_fn_replaces_default_rule(tmp_path):
+    # One ADVANCED track: default caps shared at INTERMEDIATE; the max-rule
+    # deployment lets it transfer.
+    skill = _vskill(tmp_path, "qfn-max", quorum_fn=_max_rule)
+    assert skill.engine.quorum_fn is _max_rule
+    submit_all(skill, _strong_multimodal("quiz-agent", "qfn-max", tag="m1"))
+    assert skill.engine.vertical_level("qfn-max", NODE, "quiz-agent") == A
+    assert skill.effective_mastery(NODE) == A
+
+
+def test_custom_quorum_fn_receives_resolved_params(tmp_path):
+    # The custom rule reads the knob: with the default quorum of 2, two
+    # ADVANCED tracks confirm; a BEGINNER dissenter vetoes the transfer.
+    skill = _vskill(tmp_path, "qfn-cons", quorum_fn=_consensus_rule)
+    submit_all(skill, _strong_multimodal("quiz-agent", "qfn-cons", tag="c1"))
+    submit_all(skill, _strong_multimodal("practice-agent", "qfn-cons", tag="c2"))
+    assert skill.effective_mastery(NODE) == A  # unanimous: transfers
+    submit_all(
+        skill,
+        [vb_evidence(NODE, 0.50, "quiz", "tutor-agent", "qfn-cons", day=0, ev_id="c3")],
+    )
+    assert skill.effective_mastery(NODE) == I  # dissent: no transfer
+    # ...while the default rule would still confirm ADVANCED here.
+    default_skill = _vskill(tmp_path, "qfn-cons-dflt")
+    for agent, tag in (("quiz-agent", "d1"), ("practice-agent", "d2")):
+        submit_all(default_skill, _strong_multimodal(agent, "qfn-cons-dflt", tag=tag))
+    submit_all(
+        default_skill,
+        [vb_evidence(NODE, 0.50, "quiz", "tutor-agent", "qfn-cons-dflt", day=0, ev_id="d3")],
+    )
+    assert default_skill.effective_mastery(NODE) == A
+
+
+def test_custom_quorum_fn_composes_with_assertion_floor(tmp_path):
+    # Privileged assertions still floor the shared level after custom
+    # quorum logic runs: custom rules cannot suppress them.
+    skill = _vskill(tmp_path, "qfn-floor", quorum_fn=_max_rule)
+    skill.assert_mastery(NODE, I, asserted_by="exam-board", reason="midterm")
+    submit_all(
+        skill,
+        [vb_evidence(NODE, 0.50, "quiz", "quiz-agent", "qfn-floor", day=0, ev_id="f1")],
+    )
+    assert skill.effective_mastery(NODE) == I
+
+
+def test_quorum_knob_via_default_params_end_to_end(tmp_path):
+    # The knob alone, no custom logic: quorum of 3 needs three ADVANCED
+    # tracks before the shared level transfers.
+    skill = _vskill(
+        tmp_path, "qdp", default_params=MasteryParams(xvertical_quorum_advanced=3)
+    )
+    submit_all(skill, _strong_multimodal("quiz-agent", "qdp", tag="qdp1"))
+    submit_all(skill, _strong_multimodal("practice-agent", "qdp", tag="qdp2"))
+    assert skill.effective_mastery(NODE) == I  # 2 < 3: capped
+    submit_all(skill, _strong_multimodal("tutor-agent", "qdp", tag="qdp3"))
+    assert skill.effective_mastery(NODE) == A  # 3 >= 3: confirmed
+
+
+def test_quorum_fn_contract_is_a_pure_function():
+    # The engine stores whatever it is given; the purity contract is
+    # documented on QuorumFn and honored by the default.
+    assert aggregate_vertical_mastery(
+        {"a": A, "b": A}, MasteryParams()
+    ) == aggregate_vertical_mastery({"a": A, "b": A}, MasteryParams())
+    fn: QuorumFn = _max_rule
+    assert fn({"a": A}, MasteryParams()) == A

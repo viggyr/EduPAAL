@@ -29,7 +29,7 @@ from .entities import (
     _utcnow,
 )
 from .graph import KnowledgeGraph
-from .mastery import MasteryEngine
+from .mastery import MasteryEngine, QuorumFn
 from .retrieval import RankedNode, Retriever
 from .store import StorageBackend
 
@@ -42,10 +42,13 @@ class EduPAALSkill:
         default_params: Optional[MasteryParams] = None,
         learner_id: Optional[str] = None,
         vertical_params: Optional[Dict[str, MasteryParams]] = None,
+        quorum_fn: Optional[QuorumFn] = None,
     ) -> None:
         self.store = store
         self.graph = graph
-        self.engine = MasteryEngine(store, graph, default_params, vertical_params)
+        self.engine = MasteryEngine(
+            store, graph, default_params, vertical_params, quorum_fn
+        )
         self.learner_id = learner_id
         self._retriever: Optional[Retriever] = None
 

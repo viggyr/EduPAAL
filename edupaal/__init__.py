@@ -19,6 +19,7 @@ from .mastery import (
     ASSERTION_VERSION,
     HEURISTIC_VERSION,
     MasteryEngine,
+    QuorumFn,
     aggregate_vertical_mastery,
 )
 from .retrieval import Retriever
@@ -46,6 +47,7 @@ __all__ = [
     "NodeLevel",
     "KnowledgeNode",
     "PostgresBackend",
+    "QuorumFn",
     "Retriever",
     "SQLiteBackend",
     "StorageBackend",

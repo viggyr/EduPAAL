@@ -79,6 +79,41 @@ different values create independent mastery tracks. Quiz/practice/dialogue are
   double-count as vertical evidence. A later assertion replaces the floor
   (including lowering it); evidence-driven aggregation may rise above it.
 
+### Customizing the quorum
+
+The transfer rule is a deployment choice, not a framework constant. Two
+levels of control:
+
+1. **The knobs** — `MasteryParams.xvertical_quorum_advanced` (default 2).
+   Set it for the whole deployment via `EduPAALSkill(...
+   default_params=MasteryParams(xvertical_quorum_advanced=3))`, or per node
+   via `cold_start(..., criteria_overrides={node_id: MasteryParams(...)})`.
+   (Per-vertical params tune each vertical's own promotion bars, not the
+   aggregation.)
+
+2. **The whole rule** — pass a `QuorumFn` to `EduPAALSkill` (or
+   `MasteryEngine`): `quorum_fn(levels, params) -> MasteryLevel`. It
+   receives each vertical's heuristic track level (`UNKNOWN` = no signal;
+   assertions are excluded) plus the resolved shared params, and must be
+   pure and deterministic. The engine still applies the assertion floor
+   afterwards, so custom logic composes with privileged assertions:
+
+```python
+from edupaal import MASTERY_SCORES, MasteryLevel
+
+def unanimous_transfer(levels, params):
+    attested = [l for l in levels.values()
+                if l != MasteryLevel.UNKNOWN]
+    if not attested:
+        return MasteryLevel.UNKNOWN
+    n_adv = sum(1 for l in attested if l == MasteryLevel.ADVANCED)
+    if n_adv >= params.xvertical_quorum_advanced and n_adv == len(attested):
+        return MasteryLevel.ADVANCED
+    return max(attested, key=lambda l: MASTERY_SCORES[l])
+
+skill = EduPAALSkill(store, graph, quorum_fn=unanimous_transfer)
+```
+
 ## Knowledge graph
 
 Four fixed upper levels: `Space → Subject → Concept → Topic`. Topics are

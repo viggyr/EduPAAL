@@ -38,7 +38,9 @@ Evidence carries ``source_agent`` — the vertical that reported it — and ever
 MasteryRecord is scoped to one ``vertical_id`` (the same value). Each
 vertical promotes its own track with its own thresholds (see
 ``MasteryEngine``'s ``vertical_params``); the shared (learner, topic) level
-that rollup and retrieval see is derived by ``aggregate_vertical_mastery``:
+that rollup and retrieval see is derived by the engine's quorum function —
+``aggregate_vertical_mastery`` by default, replaceable with any ``QuorumFn``
+(see below):
 
 * verticals at UNKNOWN are dropped (no evidence is not evidence of
   ignorance); all UNKNOWN -> overall UNKNOWN;
@@ -58,12 +60,18 @@ The quorum itself is governed by the *shared* parameters: the learning
 plan's override for the node (or nearest ancestor's), else the engine
 defaults. Per-vertical params tune each vertical's own promotion bars,
 not the aggregation.
+
+Deployments may replace the whole transfer rule: pass a ``QuorumFn`` to
+``MasteryEngine`` (or ``EduPAALSkill``). It receives each vertical's
+heuristic track levels plus the resolved shared params, and must be pure
+and deterministic; the assertion floor is applied afterwards by the
+engine, so custom logic composes with privileged assertions.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Mapping, Optional, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Tuple
 
 from .entities import (
     DynamicOverride,
@@ -112,6 +120,24 @@ def aggregate_vertical_mastery(
     return max(attested.values(), key=lambda l: MASTERY_SCORES[l])
 
 
+# The quorum contract. A quorum function derives the shared (learner, topic)
+# level from every vertical's current *heuristic* track level, plus the
+# resolved shared MasteryParams (plan override -> engine defaults).
+#
+# Contract for a custom function:
+#   * pure and deterministic: same (levels, params) -> same level, no I/O,
+#     no randomness, no wall-clock reads;
+#   * ``levels`` maps vertical_id -> that vertical's heuristic level.
+#     UNKNOWN means "no signal" and assertions are already excluded — a
+#     custom function never sees assertion records and cannot suppress
+#     them: the engine applies the assertion floor *after* the quorum
+#     function runs (see MasteryEngine._current_level);
+#   * honor ``params`` where it makes sense (e.g. read
+#     params.xvertical_quorum_advanced instead of hardcoding a bar) so the
+#     deployment's knobs keep working.
+QuorumFn = Callable[[Mapping[str, MasteryLevel], MasteryParams], MasteryLevel]
+
+
 def _require_node(graph: KnowledgeGraph, node_id: str) -> KnowledgeNode:
     """Fetch a node or fail loudly: an unknown node id is a caller bug and
     must never masquerade as an unevaluated (UNKNOWN) node."""
@@ -128,6 +154,7 @@ class MasteryEngine:
         graph: KnowledgeGraph,
         default_params: Optional[MasteryParams] = None,
         vertical_params: Optional[Dict[str, MasteryParams]] = None,
+        quorum_fn: Optional[QuorumFn] = None,
     ) -> None:
         self.store = store
         self.graph = graph
@@ -136,6 +163,10 @@ class MasteryEngine:
         # Evidence.source_agent that vertical reports under). Lets a quest
         # vertical promote on looser bars than a tutor vertical, for example.
         self.vertical_params = dict(vertical_params or {})
+        # How per-vertical tracks combine into the shared (learner, topic)
+        # level. Defaults to aggregate_vertical_mastery; pass a QuorumFn to
+        # define the deployment's own transfer rule.
+        self.quorum_fn = quorum_fn or aggregate_vertical_mastery
 
     # ------------------------------------------------------------ parameters
 
@@ -353,8 +384,9 @@ class MasteryEngine:
     # -------------------------------------------------------------- resolve
 
     def current_level(self, learner_id: str, node_id: str) -> MasteryLevel:
-        """The shared (learner, topic) level: quorum aggregation over every
-        vertical's track (see ``aggregate_vertical_mastery``).
+        """The shared (learner, topic) level: the engine's quorum function
+        over every vertical's track (default ``aggregate_vertical_mastery``;
+        see ``QuorumFn`` for the override contract).
 
         For aggregated views (concepts, subjects, decomposed topics) use
         ``effective_mastery`` / ``rolled_up_mastery`` instead. For one
@@ -372,7 +404,7 @@ class MasteryEngine:
             # vertical_levels; the assertion floor below handles them.
             return self.vertical_level(learner_id, node_id, vertical_id)
         levels = self.vertical_levels(learner_id, node_id)
-        agg = aggregate_vertical_mastery(
+        agg = self.quorum_fn(
             levels,
             self.params_for(learner_id, node_id),
         )
