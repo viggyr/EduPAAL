@@ -1,10 +1,12 @@
 """CONFLICT: what the heuristics do with contradictory evidence.
 
 Characterized (deliberate) behavior of heuristic-v1:
-- A single evaluation-set item below t_contradict VETOES promotion, no
-  matter which agent reported it. The engine does not weight reporters:
-  source_agent is provenance-only. Trust in reporters is a deployment
-  concern (which agents may write), not a heuristic input.
+- A single evaluation-set item below t_contradict VETOES promotion. The
+  veto is evaluated within each vertical's own evidence slice
+  (source_agent scopes the track): the engine does not weight reporters
+  against each other, but a vertical's self-contradiction blocks its own
+  promotion. Trust in reporters is a deployment concern (which agents may
+  write), not a heuristic input.
 - The veto is recency-scoped: once the contradicting item ages out of the
   K-most-recent window, promotion proceeds on the remaining consensus.
 - Sustained disagreement (every window contains a veto item) never
@@ -25,7 +27,7 @@ def test_single_contradiction_vetoes_promotion(tmp_path):
         vb_evidence(NODE, 0.95, "quiz", "quiz-agent", "conf-veto", day=0, ev_id="cv1"),
         vb_evidence(NODE, 0.92, "quiz", "quiz-agent", "conf-veto", day=1, ev_id="cv2"),
         # mean would clear 0.65, but 0.15 < t_contradict blocks it
-        vb_evidence(NODE, 0.15, "practice", "practice-agent", "conf-veto", day=2, ev_id="cv3"),
+        vb_evidence(NODE, 0.15, "practice", "quiz-agent", "conf-veto", day=2, ev_id="cv3"),
     ])
     assert skill.effective_mastery(NODE) == MasteryLevel.BEGINNER
     assert [r.level for r in skill.mastery_history(NODE)] == [MasteryLevel.BEGINNER]
@@ -34,7 +36,7 @@ def test_single_contradiction_vetoes_promotion(tmp_path):
 def test_contradiction_ages_out_of_the_window(tmp_path):
     skill = vb_skill(tmp_path, learner_id="conf-age")
     submit_all(skill, [
-        vb_evidence(NODE, 0.15, "practice", "practice-agent", "conf-age", day=0, ev_id="ca1"),
+        vb_evidence(NODE, 0.15, "practice", "quiz-agent", "conf-age", day=0, ev_id="ca1"),
         vb_evidence(NODE, 0.95, "quiz", "quiz-agent", "conf-age", day=1, ev_id="ca2"),
         vb_evidence(NODE, 0.92, "quiz", "quiz-agent", "conf-age", day=2, ev_id="ca3"),
     ])
@@ -74,7 +76,7 @@ def test_sustained_disagreement_never_promotes(tmp_path):
     for i in range(8):
         perf = 0.95 if i % 2 == 0 else 0.20
         skill.record_evidence(
-            vb_evidence(NODE, perf, "quiz", f"agent-{i % 2}", "conf-sustain", day=i, ev_id=f"cs{i}")
+            vb_evidence(NODE, perf, "quiz", "quiz-agent", "conf-sustain", day=i, ev_id=f"cs{i}")
         )
     # every K=3 window contains a 0.20 -> vetoed every time
     assert skill.effective_mastery(NODE) == MasteryLevel.BEGINNER
@@ -85,20 +87,22 @@ def test_contradiction_after_promotion_does_not_demote(tmp_path):
     """Demotion is out of scope for heuristic-v1: later contradiction is
     recorded as evidence but never lowers an achieved level."""
     skill = vb_skill(tmp_path, learner_id="conf-nodemote")
+    # two verticals confirm ADVANCED by quorum...
+    for agent, tag in (("quiz-agent", "a"), ("practice-agent", "b")):
+        submit_all(skill, [
+            vb_evidence(NODE, 0.92, "quiz", agent, "conf-nodemote", day=0, ev_id=f"{tag}n1"),
+            vb_evidence(NODE, 0.93, "practice", agent, "conf-nodemote", day=1, ev_id=f"{tag}n2"),
+            vb_evidence(NODE, 0.94, "dialogue", agent, "conf-nodemote", day=2, ev_id=f"{tag}n3"),
+        ])
+    assert skill.effective_mastery(NODE) == MasteryLevel.ADVANCED
+    # ...a run of terrible evidence afterwards: recorded, but no demotion
     submit_all(skill, [
-        vb_evidence(NODE, 0.92, "quiz", "q", "conf-nodemote", day=0, ev_id="cn1"),
-        vb_evidence(NODE, 0.93, "practice", "p", "conf-nodemote", day=1, ev_id="cn2"),
-        vb_evidence(NODE, 0.94, "dialogue", "d", "conf-nodemote", day=2, ev_id="cn3"),
+        vb_evidence(NODE, 0.10, "quiz", "quiz-agent", "conf-nodemote", day=3, ev_id="cn4"),
+        vb_evidence(NODE, 0.05, "quiz", "quiz-agent", "conf-nodemote", day=4, ev_id="cn5"),
+        vb_evidence(NODE, 0.12, "quiz", "quiz-agent", "conf-nodemote", day=5, ev_id="cn6"),
     ])
     assert skill.effective_mastery(NODE) == MasteryLevel.ADVANCED
-    # a run of terrible evidence afterwards: recorded, but no demotion
-    submit_all(skill, [
-        vb_evidence(NODE, 0.10, "quiz", "q", "conf-nodemote", day=3, ev_id="cn4"),
-        vb_evidence(NODE, 0.05, "quiz", "q", "conf-nodemote", day=4, ev_id="cn5"),
-        vb_evidence(NODE, 0.12, "quiz", "q", "conf-nodemote", day=5, ev_id="cn6"),
-    ])
-    assert skill.effective_mastery(NODE) == MasteryLevel.ADVANCED
-    assert len(skill.store.list_evidence("conf-nodemote", NODE)) == 6
+    assert len(skill.store.list_evidence("conf-nodemote", NODE)) == 9
 
 
 def test_contradiction_threshold_is_tunable(tmp_path):

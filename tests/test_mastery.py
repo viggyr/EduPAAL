@@ -19,9 +19,9 @@ def test_first_evidence_moves_unknown_to_beginner(skill):
 
 def test_strong_multimodal_evidence_chains_to_advanced(skill):
     skill.record_evidence(make_evidence("linear-equations", 0.90, "quiz", "quiz-agent", day=0))
-    skill.record_evidence(make_evidence("linear-equations", 0.85, "practice", "practice-agent", day=1))
+    skill.record_evidence(make_evidence("linear-equations", 0.85, "practice", "quiz-agent", day=1))
     records = skill.record_evidence(
-        make_evidence("linear-equations", 0.92, "visualization", "viz-agent", day=2)
+        make_evidence("linear-equations", 0.92, "visualization", "quiz-agent", day=2)
     )
     # third evidence triggers BEGINNER -> INTERMEDIATE -> ADVANCED
     assert [r.level for r in records] == [

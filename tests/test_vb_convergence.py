@@ -1,20 +1,23 @@
 """CONVERGENCE: the shared-memory hypothesis, part 1.
 
 The core claim: evidence from many verticals about one concept compounds
-into ONE coherent mastery state. The engine is an *incremental ratchet*:
-each submission is evaluated against everything seen so far, and levels
-never step down (demotion is deliberately out of scope). The supported
-contract, tested here:
+into ONE coherent mastery state. Each vertical promotes its own track from
+its own evidence slice (source_agent scopes the track); the shared
+(learner, topic) level is derived by quorum aggregation
+(aggregate_vertical_mastery), floored by privileged assertions. The engine
+is an *incremental ratchet*: each submission is evaluated against
+everything seen so far, and levels never step down (demotion is
+deliberately out of scope). The supported contract, tested here:
 
-- Each promotion *evaluation* is a pure function of the evidence set:
-  identical timestamps break ties by (occurred_at, id), never by arrival
-  order. (This was a real bug: the K-window used to be picked by arrival
-  order, so the same subset evaluated at the same moment could promote
-  differently.)
-- When verticals submit in non-decreasing (occurred_at, id) order — the
-  normal "report as it happens" pattern — the full trajectory is a pure
-  function of the set: independent of agent ids and of interleaving with
-  other nodes' evidence.
+- Each promotion *evaluation* is a pure function of the vertical's
+  evidence set: identical timestamps break ties by (occurred_at, id),
+  never by arrival order. (This was a real bug: the K-window used to be
+  picked by arrival order, so the same subset evaluated at the same
+  moment could promote differently.)
+- When one vertical submits in non-decreasing (occurred_at, id) order —
+  the normal "report as it happens" pattern — the full trajectory is a
+  pure function of the set: independent of the vertical's name and of
+  interleaving with other nodes' evidence.
 - Residual order dependence is explicit and deliberate: with tied
   timestamps, arrival order is the only temporal signal the engine has,
   and an early clean subset can promote before contradicting evidence
@@ -40,9 +43,10 @@ def test_strong_evidence_set_converges_any_arrival_order(tmp_path):
     """When EVERY K-subset of the evidence set independently supports
     promotion (mean >= t_advanced, no veto, >= 2 modalities), arrival order
     cannot matter: whichever K items arrive first chain straight to
-    ADVANCED, and later arrivals are no-ops. The final mastery is
-    identical across all 120 permutations; the *histories* legitimately
-    differ (different windows cited), so only the final level is asserted.
+    ADVANCED, and later arrivals are no-ops. Each vertical's track converges
+    identically across all 120 permutations; the two ADVANCED tracks then
+    confirm overall ADVANCED by quorum. The *histories* legitimately differ
+    (different windows cited), so only the final level is asserted.
     This is the precise boundary of the order-independence claim: it holds
     for uniformly supportive evidence, not in general (see the dilution
     and tied-timestamp tests for the deliberate exceptions)."""
@@ -62,12 +66,16 @@ def test_strong_evidence_set_converges_any_arrival_order(tmp_path):
     for perm_idx, order in enumerate(_it.permutations(range(5))):
         learner_id = f"conv-perm-{perm_idx}"
         skill = vb_skill(tmp_path, learner_id=learner_id)
-        for j in order:
-            p, act = perfs_acts[j]
-            skill.record_evidence(
-                vb_evidence(NODE, p, act, f"agent-{j}", learner_id,
-                            day=j, ev_id=f"{learner_id}-e{j + 1}")
-            )
+        # two verticals see the same evidence set in the same permuted
+        # order: each track must converge identically, and the quorum then
+        # confirms overall ADVANCED.
+        for agent in ("quiz-agent", "practice-agent"):
+            for j in order:
+                p, act = perfs_acts[j]
+                skill.record_evidence(
+                    vb_evidence(NODE, p, act, agent, learner_id,
+                                day=j, ev_id=f"{learner_id}-{agent}-e{j + 1}")
+                )
         results.add(skill.effective_mastery(NODE))
     assert results == {MasteryLevel.ADVANCED}, results
 
@@ -78,30 +86,35 @@ def test_backfill_dilution_is_path_dependent_by_design(tmp_path):
     (timestamp) order promotes on the early clean triple and the later
     diluting evidence cannot demote (ratchet). Reverse arrival evaluates
     the diluting triple first and never promotes. Both are correct
-    executions of the documented incremental rule."""
-    def make_set(learner_id):
+    executions of the documented incremental rule. Each vertical runs the
+    script on its own track; the shared level follows by quorum."""
+    def make_set(learner_id, agent, tag):
         evs = [
-            vb_evidence(NODE, 0.95, "quiz", "q", learner_id, day=0, ev_id=f"{learner_id}-h1"),
-            vb_evidence(NODE, 0.95, "practice", "p", learner_id, day=1, ev_id=f"{learner_id}-h2"),
-            vb_evidence(NODE, 0.95, "dialogue", "d", learner_id, day=2, ev_id=f"{learner_id}-h3"),
-            vb_evidence(NODE, 0.50, "quiz", "q", learner_id, day=3, ev_id=f"{learner_id}-l1"),
-            vb_evidence(NODE, 0.50, "quiz", "q", learner_id, day=4, ev_id=f"{learner_id}-l2"),
-            vb_evidence(NODE, 0.50, "quiz", "q", learner_id, day=5, ev_id=f"{learner_id}-l3"),
+            vb_evidence(NODE, 0.95, "quiz", agent, learner_id, day=0, ev_id=f"{learner_id}-{tag}h1"),
+            vb_evidence(NODE, 0.95, "practice", agent, learner_id, day=1, ev_id=f"{learner_id}-{tag}h2"),
+            vb_evidence(NODE, 0.95, "dialogue", agent, learner_id, day=2, ev_id=f"{learner_id}-{tag}h3"),
+            vb_evidence(NODE, 0.50, "quiz", agent, learner_id, day=3, ev_id=f"{learner_id}-{tag}l1"),
+            vb_evidence(NODE, 0.50, "quiz", agent, learner_id, day=4, ev_id=f"{learner_id}-{tag}l2"),
+            vb_evidence(NODE, 0.50, "quiz", agent, learner_id, day=5, ev_id=f"{learner_id}-{tag}l3"),
         ]
         return evs
 
     skill_a = vb_skill(tmp_path, learner_id="conv-bf-a")
-    submit_all(skill_a, make_set("conv-bf-a"))  # canonical order
+    for agent, tag in (("quiz-agent", "a"), ("practice-agent", "b")):
+        submit_all(skill_a, make_set("conv-bf-a", agent, tag))  # canonical order
     assert skill_a.effective_mastery(NODE) == MasteryLevel.ADVANCED
 
     skill_b = vb_skill(tmp_path, learner_id="conv-bf-b")
-    submit_all(skill_b, list(reversed(make_set("conv-bf-b"))))  # diluting first
+    for agent, tag in (("quiz-agent", "a"), ("practice-agent", "b")):
+        submit_all(skill_b, list(reversed(make_set("conv-bf-b", agent, tag))))  # diluting first
     assert skill_b.effective_mastery(NODE) == MasteryLevel.BEGINNER
 
 
-def test_agent_identity_does_not_change_mastery(tmp_path):
-    """Who reported the evidence must not matter — only what was reported.
-    source_agent is provenance, not an input to the heuristics."""
+def test_vertical_identity_scopes_mastery_tracks(tmp_path):
+    """source_agent is the vertical's identity: each vertical promotes its
+    own track from its own evidence slice. One vertical's strong evidence
+    does not leak into another vertical's track; the shared level follows
+    by quorum aggregation."""
     skill_a = vb_skill(tmp_path, learner_id="conv-agent-a")
     submit_all(skill_a, [
         vb_evidence(NODE, 0.90, "quiz", "quiz-agent", "conv-agent-a", day=0, ev_id="a1"),
@@ -110,12 +123,17 @@ def test_agent_identity_does_not_change_mastery(tmp_path):
     ])
     skill_b = vb_skill(tmp_path, learner_id="conv-agent-b")
     submit_all(skill_b, [
-        vb_evidence(NODE, 0.90, "quiz", "totally-different-agent", "conv-agent-b", day=0, ev_id="b1"),
-        vb_evidence(NODE, 0.88, "quiz", "another-agent", "conv-agent-b", day=1, ev_id="b2"),
-        vb_evidence(NODE, 0.92, "quiz", "third-agent", "conv-agent-b", day=2, ev_id="b3"),
+        vb_evidence(NODE, 0.90, "quiz", "agent-one", "conv-agent-b", day=0, ev_id="b1"),
+        vb_evidence(NODE, 0.88, "quiz", "agent-two", "conv-agent-b", day=1, ev_id="b2"),
+        vb_evidence(NODE, 0.92, "quiz", "agent-three", "conv-agent-b", day=2, ev_id="b3"),
     ])
-    assert skill_a.effective_mastery(NODE) == skill_b.effective_mastery(NODE)
-    assert _history_levels(skill_a, NODE) == _history_levels(skill_b, NODE)
+    # one vertical, three evidences -> INTERMEDIATE on its track
+    assert skill_a.engine.vertical_level("conv-agent-a", NODE, "quiz-agent") == MasteryLevel.INTERMEDIATE
+    assert skill_a.effective_mastery(NODE) == MasteryLevel.INTERMEDIATE
+    # three verticals, one evidence each -> every track stuck at BEGINNER
+    for agent in ("agent-one", "agent-two", "agent-three"):
+        assert skill_b.engine.vertical_level("conv-agent-b", NODE, agent) == MasteryLevel.BEGINNER
+    assert skill_b.effective_mastery(NODE) == MasteryLevel.BEGINNER
 
 
 def test_identical_timestamps_evaluation_is_set_determined(tmp_path):
@@ -177,18 +195,22 @@ def test_tied_timestamps_path_dependence_is_deliberate(tmp_path):
 
 
 def test_canonical_order_submission_converges(tmp_path):
-    """The supported contract: when verticals submit evidence in
+    """The supported contract: when each vertical submits evidence in
     non-decreasing (occurred_at, id) order — the normal 'report as it
     happens' pattern — the full trajectory and final mastery are pure
-    functions of the evidence set: independent of agent ids and of how
-    other nodes' evidence interleaves."""
-    def node_set(learner_id):
+    functions of the evidence sets: independent of the verticals' names
+    and of how other nodes' evidence interleaves. Two verticals each
+    drive their track to ADVANCED, so the shared level confirms ADVANCED
+    by quorum in every trial."""
+    def node_set(learner_id, agent, tag):
+        perfs = [
+            (0.90, "quiz"), (0.85, "dialogue"), (0.92, "practice"),
+            (0.88, "quiz"), (0.95, "visualization"),
+        ]
         return [
-            vb_evidence(NODE, 0.90, "quiz", "quiz-agent", learner_id, day=0, ev_id=f"{learner_id}-n1"),
-            vb_evidence(NODE, 0.85, "dialogue", "tutor-agent", learner_id, day=1, ev_id=f"{learner_id}-n2"),
-            vb_evidence(NODE, 0.92, "practice", "practice-agent", learner_id, day=2, ev_id=f"{learner_id}-n3"),
-            vb_evidence(NODE, 0.88, "quiz", "exam-agent", learner_id, day=3, ev_id=f"{learner_id}-n4"),
-            vb_evidence(NODE, 0.95, "visualization", "viz-agent", learner_id, day=4, ev_id=f"{learner_id}-n5"),
+            vb_evidence(NODE, p, act, agent, learner_id, day=d,
+                        ev_id=f"{learner_id}-{tag}-n{d}")
+            for d, (p, act) in enumerate(perfs)
         ]
 
     def other_node_set(learner_id, tag):
@@ -203,11 +225,13 @@ def test_canonical_order_submission_converges(tmp_path):
     for trial, split in enumerate([0, 2, 5]):
         learner_id = f"conv-canon-{trial}"
         skill = vb_skill(tmp_path, learner_id=learner_id)
-        main, other = node_set(learner_id), other_node_set(learner_id, f"o{trial}")
-        stream = main[:split] + other + main[split:]
-        # relabel agents to prove identity-independence
-        for e in stream:
-            e.source_agent = f"agent-{trial}-{e.activity_type}"
+        main_a = node_set(learner_id, f"agent-{trial}-a", "a")
+        main_b = node_set(learner_id, f"agent-{trial}-b", "b")
+        # pair the verticals' submissions; each vertical still submits in
+        # canonical day order
+        pairs = [e for pair in zip(main_a, main_b) for e in pair]
+        other = other_node_set(learner_id, f"o{trial}")
+        stream = pairs[:split] + other + pairs[split:]
         submit_all(skill, stream)
         trajectory = (
             skill.effective_mastery(NODE),
@@ -237,7 +261,9 @@ def test_convergence_matches_independent_model(tmp_path):
                 NODE,
                 round(rng.uniform(0.3, 1.0), 2),
                 rng.choice(["quiz", "practice", "dialogue"]),
-                f"agent-{rng.randint(1, 3)}",
+                # one vertical per trial: the independent model replays a
+                # single vertical's incremental ratchet.
+                "quiz-agent",
                 learner_id,
                 day=rng.randint(0, 20),
                 ev_id=f"{learner_id}-m{i}",
@@ -256,19 +282,23 @@ def test_early_promotion_survives_later_dilution(tmp_path):
     """Deliberate ratchet, characterized: 3x0.95 promotes to ADVANCED; three
     0.50s arriving later dilute the K-window but cannot demote (demotion is
     out of scope). The independent model agrees — this is the documented
-    no-demotion semantics, not a malfunction."""
+    no-demotion semantics, not a malfunction. The ratchet is per-track: the
+    shared level then applies the transfer bar to the lone ADVANCED track.
+    """
     skill = vb_skill(tmp_path, learner_id="conv-dilute")
     arrival = [
-        vb_evidence(NODE, 0.95, "quiz", "q", "conv-dilute", day=0, ev_id="dl1"),
-        vb_evidence(NODE, 0.95, "practice", "p", "conv-dilute", day=1, ev_id="dl2"),
-        vb_evidence(NODE, 0.95, "dialogue", "d", "conv-dilute", day=2, ev_id="dl3"),
-        vb_evidence(NODE, 0.50, "quiz", "q", "conv-dilute", day=3, ev_id="dl4"),
-        vb_evidence(NODE, 0.50, "quiz", "q", "conv-dilute", day=4, ev_id="dl5"),
-        vb_evidence(NODE, 0.50, "quiz", "q", "conv-dilute", day=5, ev_id="dl6"),
+        vb_evidence(NODE, 0.95, "quiz", "quiz-agent", "conv-dilute", day=0, ev_id="dl1"),
+        vb_evidence(NODE, 0.95, "practice", "quiz-agent", "conv-dilute", day=1, ev_id="dl2"),
+        vb_evidence(NODE, 0.95, "dialogue", "quiz-agent", "conv-dilute", day=2, ev_id="dl3"),
+        vb_evidence(NODE, 0.50, "quiz", "quiz-agent", "conv-dilute", day=3, ev_id="dl4"),
+        vb_evidence(NODE, 0.50, "quiz", "quiz-agent", "conv-dilute", day=4, ev_id="dl5"),
+        vb_evidence(NODE, 0.50, "quiz", "quiz-agent", "conv-dilute", day=5, ev_id="dl6"),
     ]
     submit_all(skill, arrival)
-    assert skill.effective_mastery(NODE) == MasteryLevel.ADVANCED
+    assert skill.engine.vertical_level("conv-dilute", NODE, "quiz-agent") == MasteryLevel.ADVANCED
     assert independent_incremental_level(arrival) == MasteryLevel.ADVANCED
+    # a lone ADVANCED track caps at INTERMEDIATE overall (transfer bar)
+    assert skill.effective_mastery(NODE) == MasteryLevel.INTERMEDIATE
     # the last-3 window is now all 0.50: a *batch* fixed point would say
     # BEGINNER, but the engine is an incremental ratchet, not a batch engine
 

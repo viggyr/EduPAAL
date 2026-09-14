@@ -85,10 +85,10 @@ class StorageBackend(Protocol):
     # -- mastery records (append-only history) --
     def save_mastery_record(self, record: MasteryRecord) -> None: ...
     def get_mastery_history(
-        self, learner_id: str, node_id: str
+        self, learner_id: str, node_id: str, vertical_id: Optional[str] = None
     ) -> List[MasteryRecord]: ...
     def get_current_mastery(
-        self, learner_id: str, node_id: str
+        self, learner_id: str, node_id: str, vertical_id: Optional[str] = None
     ) -> Optional[MasteryRecord]: ...
 
     # -- overrides --
@@ -179,7 +179,8 @@ class SQLiteBackend:
                 evidence_ids TEXT NOT NULL,
                 assertion INTEGER NOT NULL DEFAULT 0,
                 asserted_by TEXT,
-                reason TEXT
+                reason TEXT,
+                vertical_id TEXT NOT NULL DEFAULT 'default'
             );
             CREATE INDEX IF NOT EXISTS idx_mastery_learner_node
                 ON mastery_records (learner_id, node_id);
@@ -221,6 +222,20 @@ class SQLiteBackend:
         if "created_at" not in cols:
             self._conn.execute(
                 "ALTER TABLE overrides ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"
+            )
+            self._conn.commit()
+        # Migration for per-vertical mastery tracks: records written before
+        # vertical scoping belong to the "default" track.
+        mastery_cols = {
+            r[1]
+            for r in self._conn.execute(
+                "PRAGMA table_info(mastery_records)"
+            ).fetchall()
+        }
+        if "vertical_id" not in mastery_cols:
+            self._conn.execute(
+                "ALTER TABLE mastery_records "
+                "ADD COLUMN vertical_id TEXT NOT NULL DEFAULT 'default'"
             )
             self._conn.commit()
         self._conn.commit()
@@ -441,8 +456,9 @@ class SQLiteBackend:
             self._conn.execute(
                 "INSERT INTO mastery_records"
                 " (id, node_id, learner_id, level, updated_at, rule_version,"
-                "  params_in_effect, evidence_ids, assertion, asserted_by, reason)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "  params_in_effect, evidence_ids, assertion, asserted_by, reason,"
+                "  vertical_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     record.id,
                     record.node_id,
@@ -455,6 +471,7 @@ class SQLiteBackend:
                     int(record.assertion),
                     record.asserted_by,
                     record.reason,
+                    record.vertical_id,
                 ),
             )
         except sqlite3.IntegrityError:
@@ -462,19 +479,21 @@ class SQLiteBackend:
         self._conn.commit()
 
     def get_mastery_history(
-        self, learner_id: str, node_id: str
+        self, learner_id: str, node_id: str, vertical_id: Optional[str] = None
     ) -> List[MasteryRecord]:
-        rows = self._conn.execute(
-            "SELECT * FROM mastery_records WHERE learner_id = ? AND node_id = ?"
-            " ORDER BY updated_at, rowid",
-            (learner_id, node_id),
-        ).fetchall()
+        query = "SELECT * FROM mastery_records WHERE learner_id = ? AND node_id = ?"
+        params: List[Any] = [learner_id, node_id]
+        if vertical_id is not None:
+            query += " AND vertical_id = ?"
+            params.append(vertical_id)
+        query += " ORDER BY updated_at, rowid"
+        rows = self._conn.execute(query, params).fetchall()
         return [self._row_to_record(r) for r in rows]
 
     def get_current_mastery(
-        self, learner_id: str, node_id: str
+        self, learner_id: str, node_id: str, vertical_id: Optional[str] = None
     ) -> Optional[MasteryRecord]:
-        history = self.get_mastery_history(learner_id, node_id)
+        history = self.get_mastery_history(learner_id, node_id, vertical_id)
         return history[-1] if history else None
 
     @staticmethod
@@ -491,6 +510,7 @@ class SQLiteBackend:
             assertion=bool(row["assertion"]),
             asserted_by=row["asserted_by"],
             reason=row["reason"],
+            vertical_id=row["vertical_id"],
         )
 
     # -- overrides --

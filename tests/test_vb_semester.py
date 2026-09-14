@@ -24,9 +24,12 @@ PLAN = ["linear-equations", "linearization", "dropout-rate", "inverted-dropout"]
 AGENTS = {"guide": "dialogue", "evaluator": "quiz", "practice": "practice"}
 
 
-def ev(learner, vertical, node, perf, day, n):
+def ev(learner, vertical, node, perf, day, n, activity=None):
+    # activity defaults to the vertical's home modality, but a vertical may
+    # also report other modalities (a tutor administers quizzes too) — the
+    # cross-modal ADVANCED gate counts activity types, not verticals.
     return vb_evidence(
-        node, perf, AGENTS[vertical], vertical, learner,
+        node, perf, activity or AGENTS[vertical], vertical, learner,
         day=day, ev_id=f"{learner}-{n}",
     )
 
@@ -37,20 +40,24 @@ def test_four_week_semester(tmp_path):
         skills[learner] = vb_skill(tmp_path, learner_id=learner, topics=PLAN)
 
     # ---- week 1: orientation dialogue + first quizzes (days 0-6) ----
+    # each vertical builds its own track: the guide's three dialogues
+    # promote its track to INTERMEDIATE; the evaluator's lone quiz is
+    # still BEGINNER. Shared = highest attested = INTERMEDIATE.
     submit_all(skills["aria"], [
         ev("aria", "guide", "linear-equations", 0.80, 0, 1),
         ev("aria", "evaluator", "linear-equations", 0.72, 2, 2),
-        ev("aria", "guide", "linear-equations", 0.78, 5, 3),  # [0.80,0.72,0.78] -> I
+        ev("aria", "guide", "linear-equations", 0.78, 5, 3),
+        ev("aria", "guide", "linear-equations", 0.84, 6, 4),  # guide track: [0.80,0.78,0.84] -> I
     ])
     submit_all(skills["dev"], [
         ev("dev", "guide", "linear-equations", 0.60, 1, 1),
         ev("dev", "evaluator", "linear-equations", 0.65, 3, 2),
-        ev("dev", "practice", "linear-equations", 0.55, 5, 3),  # [0.60,0.65,0.55] -> B
+        ev("dev", "practice", "linear-equations", 0.55, 5, 3),  # three thin tracks -> B
     ])
     submit_all(skills["noah"], [
         ev("noah", "guide", "linear-equations", 0.90, 1, 1),
         ev("noah", "evaluator", "linear-equations", 0.30, 4, 2),  # disagreement
-        ev("noah", "practice", "linear-equations", 0.85, 6, 3),  # 0.30 vetoes -> B
+        ev("noah", "practice", "linear-equations", 0.85, 6, 3),  # three thin tracks -> B
     ])
 
     from edupaal import MasteryLevel
@@ -60,21 +67,30 @@ def test_four_week_semester(tmp_path):
     assert noah.effective_mastery("linear-equations") == MasteryLevel.BEGINNER
 
     # ---- week 2: practice intensifies (days 7-13) ----
+    # aria: the practice vertical runs a mixed week (practice/quiz/dialogue)
+    # and the evaluator confirms with quiz+practice -> both tracks ADVANCED,
+    # quorum confirms shared ADVANCED. The guide stays dialogue-only at
+    # INTERMEDIATE.
     submit_all(aria, [
-        ev("aria", "practice", "linear-equations", 0.88, 8, 4),
-        ev("aria", "evaluator", "linear-equations", 0.91, 10, 5),
-        ev("aria", "guide", "linear-equations", 0.86, 12, 6),  # [0.88,0.91,0.86] mean 0.883, 3 modalities -> A
-        ev("aria", "evaluator", "linearization", 0.75, 11, 7),
-        ev("aria", "guide", "linearization", 0.70, 13, 8),  # 2/3 -> B
+        ev("aria", "practice", "linear-equations", 0.88, 8, 5),
+        ev("aria", "practice", "linear-equations", 0.90, 9, 6, activity="quiz"),
+        ev("aria", "practice", "linear-equations", 0.89, 10, 7, activity="dialogue"),
+        ev("aria", "evaluator", "linear-equations", 0.91, 10, 8),
+        ev("aria", "evaluator", "linear-equations", 0.93, 11, 9, activity="practice"),
+        ev("aria", "evaluator", "linear-equations", 0.92, 12, 10),
+        ev("aria", "guide", "linear-equations", 0.86, 12, 11),
+        ev("aria", "evaluator", "linearization", 0.75, 11, 12),
+        ev("aria", "guide", "linearization", 0.70, 13, 13),  # two thin tracks -> B
     ])
     submit_all(dev, [
         ev("dev", "practice", "linear-equations", 0.70, 9, 4),
-        ev("dev", "evaluator", "linear-equations", 0.75, 12, 5),  # window [0.55,0.70,0.75] mean 0.667, same modal -> I
+        ev("dev", "evaluator", "linear-equations", 0.75, 12, 5),
+        ev("dev", "practice", "linear-equations", 0.72, 13, 6),  # practice track [0.55,0.70,0.72] -> I
     ])
     submit_all(noah, [
         ev("noah", "guide", "linearization", 0.85, 9, 4),
-        ev("noah", "evaluator", "linearization", 0.25, 11, 5),  # veto again -> B after 3
-        ev("noah", "practice", "linearization", 0.80, 13, 6),
+        ev("noah", "evaluator", "linearization", 0.25, 11, 5),  # disagreement
+        ev("noah", "practice", "linearization", 0.80, 13, 6),  # three thin tracks -> B
     ])
     assert aria.effective_mastery("linear-equations") == MasteryLevel.ADVANCED
     assert aria.effective_mastery("linearization") == MasteryLevel.BEGINNER
@@ -97,9 +113,14 @@ def test_four_week_semester(tmp_path):
     assert dev.effective_mastery("linear-equations") == ML.INTERMEDIATE  # preserved
     assert dev.effective_mastery("inverted-dropout") == ML.UNKNOWN
     submit_all(dev, [
-        ev("dev", "evaluator", "inverted-dropout", 0.90, 16, 6),
-        ev("dev", "practice", "inverted-dropout", 0.88, 18, 7),
-        ev("dev", "guide", "inverted-dropout", 0.92, 20, 8),  # [0.90,0.88,0.92] -> A (mean 0.9, cross-modal)
+        ev("dev", "evaluator", "inverted-dropout", 0.90, 16, 7),
+        ev("dev", "evaluator", "inverted-dropout", 0.91, 17, 8, activity="practice"),
+        ev("dev", "evaluator", "inverted-dropout", 0.92, 18, 9),
+        ev("dev", "practice", "inverted-dropout", 0.88, 18, 10),
+        ev("dev", "practice", "inverted-dropout", 0.90, 19, 11, activity="dialogue"),
+        ev("dev", "practice", "inverted-dropout", 0.91, 20, 12),
+        ev("dev", "guide", "inverted-dropout", 0.92, 20, 13),  # guide's lone report -> B
+        # evaluator + practice tracks both ADVANCED -> quorum confirms A
     ])
     assert dev.effective_mastery("inverted-dropout") == ML.ADVANCED
     # dropout-rate was dropped from the plan but its (empty) history is intact
@@ -107,7 +128,8 @@ def test_four_week_semester(tmp_path):
 
     # ---- week 4: finals (days 21-27) ----
     submit_all(aria, [
-        ev("aria", "evaluator", "linearization", 0.78, 22, 9),  # [0.75,0.70,0.78] mean 0.743 -> I
+        ev("aria", "evaluator", "linearization", 0.76, 21, 14),
+        ev("aria", "evaluator", "linearization", 0.78, 22, 15),  # evaluator track [0.75,0.76,0.78] -> I
     ])
     assert aria.effective_mastery("linearization") == ML.INTERMEDIATE
     # noah sits the final: the evaluator asserts linear-equations

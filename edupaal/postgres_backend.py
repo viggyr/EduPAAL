@@ -114,7 +114,8 @@ CREATE TABLE IF NOT EXISTS mastery_records (
     evidence_ids TEXT NOT NULL,
     assertion BOOLEAN NOT NULL DEFAULT FALSE,
     asserted_by TEXT,
-    reason TEXT
+    reason TEXT,
+    vertical_id TEXT NOT NULL DEFAULT 'default'
 );
 CREATE INDEX IF NOT EXISTS idx_mastery_learner_node
     ON mastery_records (learner_id, node_id);
@@ -167,6 +168,12 @@ class PostgresBackend:
 
     def _init_schema(self) -> None:
         self._conn.execute(_DDL)
+        # Migration for per-vertical mastery tracks: records written before
+        # vertical scoping belong to the "default" track.
+        self._conn.execute(
+            "ALTER TABLE mastery_records "
+            "ADD COLUMN IF NOT EXISTS vertical_id TEXT NOT NULL DEFAULT 'default'"
+        )
 
     # -- learners & preferences --
 
@@ -396,8 +403,9 @@ class PostgresBackend:
             self._conn.execute(
                 "INSERT INTO mastery_records"
                 " (id, node_id, learner_id, level, updated_at, rule_version,"
-                "  params_in_effect, evidence_ids, assertion, asserted_by, reason)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "  params_in_effect, evidence_ids, assertion, asserted_by, reason,"
+                "  vertical_id)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     record.id,
                     record.node_id,
@@ -410,6 +418,7 @@ class PostgresBackend:
                     bool(record.assertion),
                     record.asserted_by,
                     record.reason,
+                    record.vertical_id,
                 ),
             )
         except _pg_errors.UniqueViolation:
@@ -418,19 +427,23 @@ class PostgresBackend:
             ) from None
 
     def get_mastery_history(
-        self, learner_id: str, node_id: str
+        self, learner_id: str, node_id: str, vertical_id: Optional[str] = None
     ) -> List[MasteryRecord]:
-        rows = self._conn.execute(
+        query = (
             "SELECT * FROM mastery_records WHERE learner_id = %s AND node_id = %s"
-            " ORDER BY updated_at, seq",
-            (learner_id, node_id),
-        ).fetchall()
+        )
+        params: List[Any] = [learner_id, node_id]
+        if vertical_id is not None:
+            query += " AND vertical_id = %s"
+            params.append(vertical_id)
+        query += " ORDER BY updated_at, seq"
+        rows = self._conn.execute(query, params).fetchall()
         return [self._row_to_record(r) for r in rows]
 
     def get_current_mastery(
-        self, learner_id: str, node_id: str
+        self, learner_id: str, node_id: str, vertical_id: Optional[str] = None
     ) -> Optional[MasteryRecord]:
-        history = self.get_mastery_history(learner_id, node_id)
+        history = self.get_mastery_history(learner_id, node_id, vertical_id)
         return history[-1] if history else None
 
     @staticmethod
@@ -447,6 +460,7 @@ class PostgresBackend:
             assertion=bool(row["assertion"]),
             asserted_by=row["asserted_by"],
             reason=row["reason"],
+            vertical_id=row["vertical_id"],
         )
 
     # -- overrides --

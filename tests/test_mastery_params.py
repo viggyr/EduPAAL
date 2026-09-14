@@ -66,13 +66,16 @@ def test_cross_modal_gate_blocks_advanced_by_default(skill):
 
 
 def test_cross_modal_gate_can_be_relaxed(store, graph, prefs):
+    # three strong quiz-only evidences: the relaxed gate lets the track
+    # reach ADVANCED; the shared level still applies the transfer bar.
     skill = _fresh_skill(
         store, graph, prefs,
         {"linear-equations": MasteryParams(cross_modal_advanced=False)},
     )
     for day, perf in enumerate([0.90, 0.88, 0.92]):
         skill.record_evidence(make_evidence("linear-equations", perf, day=day))
-    assert skill.effective_mastery("linear-equations") == MasteryLevel.ADVANCED
+    assert skill.engine.vertical_level("learner-1", "linear-equations", "quiz-agent") == MasteryLevel.ADVANCED
+    assert skill.effective_mastery("linear-equations") == MasteryLevel.INTERMEDIATE
 
 
 def test_params_are_recorded_in_effect(store, graph, prefs):

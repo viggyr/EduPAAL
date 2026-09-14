@@ -107,8 +107,15 @@ class MasteryParams:
     """Tunable knobs for the mastery heuristics (heuristic-v1).
 
     The framework defines the *shape* of the promotion rules; the deployment
-    controls these parameters — globally, or per concept/topic via the
-    learning plan's ``criteria_overrides``.
+    controls these parameters — globally, per vertical (``MasteryEngine``'s
+    ``vertical_params``), or per concept/topic via the learning plan's
+    ``criteria_overrides``.
+
+    The ``xvertical_quorum_advanced`` knob governs the cross-vertical
+    aggregation (see ``aggregate_vertical_mastery``): overall ADVANCED
+    needs that many verticals attesting ADVANCED. A lone vertical's
+    ADVANCED caps at INTERMEDIATE overall — reaching ADVANCED overall
+    requires confirmation across verticals, which is the transfer bar.
     """
 
     k_evidence: int = 3  # evidence items (most recent, in window) per evaluation
@@ -118,6 +125,7 @@ class MasteryParams:
     t_contradict: float = 0.40  # any evaluation-set item below this blocks promotion
     cross_modal_advanced: bool = True  # ADVANCED needs >=2 distinct activity_types
     prereq_gate: MasteryLevel = MasteryLevel.INTERMEDIATE  # prereq satisfaction bar
+    xvertical_quorum_advanced: int = 2  # verticals attesting ADVANCED for overall ADVANCED
 
     def __post_init__(self) -> None:
         if isinstance(self.prereq_gate, str):
@@ -130,6 +138,8 @@ class MasteryParams:
             v = getattr(self, name)
             if not 0.0 <= v <= 1.0:
                 raise ValueError(f"{name} must be within [0, 1]")
+        if self.xvertical_quorum_advanced < 1:
+            raise ValueError("xvertical_quorum_advanced must be >= 1")
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -140,10 +150,16 @@ class MasteryParams:
             "t_contradict": self.t_contradict,
             "cross_modal_advanced": self.cross_modal_advanced,
             "prereq_gate": self.prereq_gate.value,
+            "xvertical_quorum_advanced": self.xvertical_quorum_advanced,
         }
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "MasteryParams":
+        # Tolerate dicts written before the quorum knob existed, and dicts
+        # that still carry the removed xvertical_quorum_intermediate knob.
+        d = dict(d)
+        d.setdefault("xvertical_quorum_advanced", 2)
+        d.pop("xvertical_quorum_intermediate", None)
         return cls(**d)
 
 
@@ -176,12 +192,23 @@ class Evidence:
     ``performance`` in [0, 1]; EduPAAL never interprets raw scores — the
     normalized layer is what keeps the mastery rules agent-agnostic. ``details``
     preserves the raw payload for audit.
+
+    ``source_agent`` is the reporting *vertical's* stable identity (e.g.
+    ``"tutor"``, ``"quest"``, ``"exam-board"``) — not the individual
+    sub-agent or modality that produced one observation. The engine scopes
+    one mastery track per distinct ``source_agent``, so all evidence from
+    one vertical MUST share one ``source_agent`` value; different activity
+    modalities within a vertical (quiz, practice, dialogue) are
+    ``activity_type``, not separate agents. Reporting the same vertical
+    under two names silently splits it into two tracks with no shared
+    confirmation — a caller bug the framework cannot detect, so name
+    verticals once and keep them stable.
     """
 
     id: str
     learner_id: str
     node_id: str  # must reference a TOPIC node
-    source_agent: str  # REQUIRED: which vertical agent reported this
+    source_agent: str  # REQUIRED: the reporting vertical's stable identity (see class docstring)
     activity_type: str  # REQUIRED: quiz | practice | dialogue | visualization | quest | human_report | ...
     occurred_at: datetime
     performance: float  # REQUIRED, normalized by the reporter into [0, 1]
@@ -211,7 +238,14 @@ class Evidence:
 class MasteryRecord:
     """One durable mastery transition. History is append-only: the current
     mastery of a node is the latest record; every past record is retained so
-    any memory view is reproducible."""
+    any memory view is reproducible.
+
+    ``vertical_id`` scopes the record to one vertical's mastery track — it
+    corresponds to ``Evidence.source_agent``. Each vertical promotes its own
+    track with its own thresholds; the shared (learner, topic) level is
+    derived by quorum aggregation (see ``aggregate_vertical_mastery``).
+    Records written before vertical scoping read back as ``"default"``.
+    """
 
     node_id: str
     learner_id: str
@@ -223,11 +257,14 @@ class MasteryRecord:
     assertion: bool = False  # True when written via assert_mastery / promoted override
     asserted_by: Optional[str] = None
     reason: Optional[str] = None
+    vertical_id: str = "default"
     id: str = field(default_factory=lambda: _new_id("mr"))
 
     def __post_init__(self) -> None:
         if isinstance(self.level, str):
             self.level = MasteryLevel(self.level)
+        if not self.vertical_id:
+            raise ValueError("vertical_id is required")
         if self.updated_at.tzinfo is None:
             self.updated_at = self.updated_at.replace(tzinfo=timezone.utc)
 

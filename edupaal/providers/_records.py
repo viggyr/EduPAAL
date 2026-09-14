@@ -119,6 +119,7 @@ def to_record(entity: Any) -> Tuple[str, str, Dict[str, Any]]:
             "assertion": entity.assertion,
             "asserted_by": entity.asserted_by,
             "reason": entity.reason,
+            "vertical_id": entity.vertical_id,
         }
         return KIND_MASTERY_RECORD, entity.id, _envelope(
             KIND_MASTERY_RECORD, entity.id, data
@@ -254,6 +255,8 @@ def from_record(record: Dict[str, Any]) -> Any:
             assertion=data["assertion"],
             asserted_by=data["asserted_by"],
             reason=data["reason"],
+            # Records written before vertical scoping have no vertical_id.
+            vertical_id=data.get("vertical_id", "default"),
         )
     if kind == KIND_OVERRIDE:
         return DynamicOverride(

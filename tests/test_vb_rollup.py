@@ -9,7 +9,7 @@ overridden node only.
 
 import random
 
-from edupaal import MasteryLevel, NodeLevel
+from edupaal import MasteryLevel, MasteryParams, NodeLevel, aggregate_vertical_mastery
 
 from .vb_helpers import (
     independent_incremental_level,
@@ -20,6 +20,15 @@ from .vb_helpers import (
     vb_evidence,
     vb_skill,
 )
+
+
+def _group_by_vertical(evidences):
+    """Group an arrival-ordered evidence list by reporting vertical,
+    preserving arrival order within each vertical's slice."""
+    by_vertical = {}
+    for e in evidences:
+        by_vertical.setdefault(e.source_agent, []).append(e)
+    return by_vertical
 
 
 def test_rollup_matches_oracle_on_random_trees(tmp_path):
@@ -54,9 +63,19 @@ def test_rollup_matches_oracle_on_random_trees(tmp_path):
             skill.record_evidence(e)
 
         leaf_levels = {
-            # arrival order per leaf is the submission loop order: the model
-            # replays exactly what the engine saw
-            leaf: independent_incremental_level(evidence_by_node.get(leaf, []))
+            # the engine scopes one track per vertical and aggregates by
+            # quorum: the oracle replays each vertical's slice independently
+            # (arrival order preserved) and applies the documented
+            # aggregation rule.
+            leaf: aggregate_vertical_mastery(
+                {
+                    agent: independent_incremental_level(evs)
+                    for agent, evs in _group_by_vertical(
+                        evidence_by_node.get(leaf, [])
+                    ).items()
+                },
+                MasteryParams(),
+            )
             for leaf in leaves
         }
         oracle = independent_rollup(graph, leaf_levels)
@@ -75,11 +94,13 @@ def test_unknown_leaves_excluded_not_zeroed(tmp_path):
     """UNKNOWN children must be *excluded* from the parent mean, not scored
     as zero: one ADVANCED leaf among unknown siblings rolls up ADVANCED."""
     skill = vb_skill(tmp_path, learner_id="rollup-excl")
-    submit_all(skill, [
-        vb_evidence("linear-equations", 0.95, "quiz", "q", "rollup-excl", day=0, ev_id="re1"),
-        vb_evidence("linear-equations", 0.96, "practice", "p", "rollup-excl", day=1, ev_id="re2"),
-        vb_evidence("linear-equations", 0.97, "dialogue", "d", "rollup-excl", day=2, ev_id="re3"),
-    ])
+    # two verticals confirm ADVANCED on linear-equations by quorum
+    for agent, tag in (("quiz-agent", "a"), ("practice-agent", "b")):
+        submit_all(skill, [
+            vb_evidence("linear-equations", 0.95, "quiz", agent, "rollup-excl", day=0, ev_id=f"{tag}re1"),
+            vb_evidence("linear-equations", 0.96, "practice", agent, "rollup-excl", day=1, ev_id=f"{tag}re2"),
+            vb_evidence("linear-equations", 0.97, "dialogue", agent, "rollup-excl", day=2, ev_id=f"{tag}re3"),
+        ])
     assert skill.effective_mastery("linear-equations") == MasteryLevel.ADVANCED
     # dropout-rate untouched (UNKNOWN) -> excluded, not averaged as 0
     assert skill.effective_mastery("dropout-rate") == MasteryLevel.UNKNOWN
@@ -94,13 +115,17 @@ def test_ties_round_down(tmp_path):
     """A parent mean exactly halfway between two levels (1.5) rounds DOWN
     to the lower level — it must not sneak up to ADVANCED."""
     skill = vb_skill(tmp_path, learner_id="rollup-tie")
+    # two verticals confirm ADVANCED on linear-equations by quorum
+    for agent, tag in (("quiz-agent", "a"), ("practice-agent", "b")):
+        submit_all(skill, [
+            vb_evidence("linear-equations", 0.92, "quiz", agent, "rollup-tie", day=0, ev_id=f"{tag}rt1"),
+            vb_evidence("linear-equations", 0.93, "practice", agent, "rollup-tie", day=1, ev_id=f"{tag}rt2"),
+            vb_evidence("linear-equations", 0.94, "dialogue", agent, "rollup-tie", day=2, ev_id=f"{tag}rt3"),
+        ])
     submit_all(skill, [
-        vb_evidence("linear-equations", 0.92, "quiz", "q", "rollup-tie", day=0, ev_id="rt1"),
-        vb_evidence("linear-equations", 0.93, "practice", "p", "rollup-tie", day=1, ev_id="rt2"),
-        vb_evidence("linear-equations", 0.94, "dialogue", "d", "rollup-tie", day=2, ev_id="rt3"),
-        vb_evidence("linearization", 0.70, "quiz", "q", "rollup-tie", day=0, ev_id="rt4"),
-        vb_evidence("linearization", 0.70, "quiz", "q", "rollup-tie", day=1, ev_id="rt5"),
-        vb_evidence("linearization", 0.70, "quiz", "q", "rollup-tie", day=2, ev_id="rt6"),
+        vb_evidence("linearization", 0.70, "quiz", "quiz-agent", "rollup-tie", day=0, ev_id="rt4"),
+        vb_evidence("linearization", 0.70, "quiz", "quiz-agent", "rollup-tie", day=1, ev_id="rt5"),
+        vb_evidence("linearization", 0.70, "quiz", "quiz-agent", "rollup-tie", day=2, ev_id="rt6"),
     ])
     assert skill.effective_mastery("linear-equations") == MasteryLevel.ADVANCED   # score 2.0
     assert skill.effective_mastery("linearization") == MasteryLevel.INTERMEDIATE  # score 1.0

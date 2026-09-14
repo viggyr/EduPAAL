@@ -31,12 +31,39 @@ heuristic-v1 rules
 Every transition writes a MasteryRecord carrying the rule version, the exact
 parameters in effect, and the evidence IDs that caused it — so any past
 decision can be replayed and explained.
+
+Vertical tracks and quorum aggregation
+--------------------------------------
+Evidence carries ``source_agent`` — the vertical that reported it — and every
+MasteryRecord is scoped to one ``vertical_id`` (the same value). Each
+vertical promotes its own track with its own thresholds (see
+``MasteryEngine``'s ``vertical_params``); the shared (learner, topic) level
+that rollup and retrieval see is derived by ``aggregate_vertical_mastery``:
+
+* verticals at UNKNOWN are dropped (no evidence is not evidence of
+  ignorance); all UNKNOWN -> overall UNKNOWN;
+* overall ADVANCED needs ``xvertical_quorum_advanced`` (default 2)
+  verticals attesting ADVANCED;
+* a lone ADVANCED caps at INTERMEDIATE overall — the transfer bar:
+  advancement must be confirmed across contexts;
+* anything less falls back to the highest attested level (so one
+  INTERMEDIATE, or one BEGINNER, reports as-is).
+* Privileged assertions bypass the quorum: an assertion is a deliberate
+  statement about the learner, not a noisy heuristic inference, so the
+  latest assertion floors the shared level. Assertions are learner-level
+  knowledge — they are excluded from per-vertical tracks and never count
+  as a vertical's attestation.
+
+The quorum itself is governed by the *shared* parameters: the learning
+plan's override for the node (or nearest ancestor's), else the engine
+defaults. Per-vertical params tune each vertical's own promotion bars,
+not the aggregation.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from .entities import (
     DynamicOverride,
@@ -57,6 +84,34 @@ HEURISTIC_VERSION = "heuristic-v1"
 ASSERTION_VERSION = "assertion-v1"
 
 
+def aggregate_vertical_mastery(
+    levels: Mapping[str, MasteryLevel], params: MasteryParams
+) -> MasteryLevel:
+    """Derive the shared (learner, topic) level from per-vertical levels.
+
+    Pure and deterministic: the same per-vertical levels always aggregate
+    the same way. ``levels`` maps vertical_id -> that vertical's current
+    *heuristic* level (UNKNOWN allowed — it means "this vertical has no
+    signal"; assertion records are excluded, see ``vertical_levels``).
+
+    The transfer bar: overall ADVANCED needs ``xvertical_quorum_advanced``
+    (default 2) verticals attesting ADVANCED. A lone ADVANCED caps at
+    INTERMEDIATE — advancement must be confirmed across contexts. Anything
+    less falls back to the highest attested level.
+    """
+    attested = {v: l for v, l in levels.items() if l != MasteryLevel.UNKNOWN}
+    if not attested:
+        return MasteryLevel.UNKNOWN
+    n_advanced = sum(1 for l in attested.values() if l == MasteryLevel.ADVANCED)
+    if n_advanced >= params.xvertical_quorum_advanced:
+        return MasteryLevel.ADVANCED
+    if n_advanced >= 1:
+        # Cross-context confirmation failed: one vertical's ADVANCED is
+        # INTERMEDIATE overall, no matter how many verticals attest below.
+        return MasteryLevel.INTERMEDIATE
+    return max(attested.values(), key=lambda l: MASTERY_SCORES[l])
+
+
 def _require_node(graph: KnowledgeGraph, node_id: str) -> KnowledgeNode:
     """Fetch a node or fail loudly: an unknown node id is a caller bug and
     must never masquerade as an unevaluated (UNKNOWN) node."""
@@ -72,16 +127,30 @@ class MasteryEngine:
         store: StorageBackend,
         graph: KnowledgeGraph,
         default_params: Optional[MasteryParams] = None,
+        vertical_params: Optional[Dict[str, MasteryParams]] = None,
     ) -> None:
         self.store = store
         self.graph = graph
         self.default_params = default_params or MasteryParams()
+        # Per-vertical threshold overrides, keyed by vertical_id (== the
+        # Evidence.source_agent that vertical reports under). Lets a quest
+        # vertical promote on looser bars than a tutor vertical, for example.
+        self.vertical_params = dict(vertical_params or {})
 
     # ------------------------------------------------------------ parameters
 
-    def params_for(self, learner_id: str, node_id: str) -> MasteryParams:
-        """Resolve the effective knobs: plan override for the node, else the
-        nearest ancestor's override (concept, then subject...), else defaults."""
+    def params_for(
+        self,
+        learner_id: str,
+        node_id: str,
+        vertical_id: str = "default",
+    ) -> MasteryParams:
+        """Resolve the effective knobs for one vertical's track.
+
+        Precedence, most specific first: the plan's override for the node,
+        the nearest ancestor's override (concept, then subject...), the
+        vertical's own params, else the engine defaults.
+        """
         plan = self.store.get_plan_for_learner(learner_id)
         if plan is not None:
             node = _require_node(self.graph, node_id)
@@ -89,7 +158,7 @@ class MasteryEngine:
             for cid in candidates:
                 if cid in plan.criteria_overrides:
                     return plan.criteria_overrides[cid]
-        return self.default_params
+        return self.vertical_params.get(vertical_id, self.default_params)
 
     # ---------------------------------------------------------------- record
 
@@ -111,18 +180,29 @@ class MasteryEngine:
                 "on the finest-grained sub-topic instead"
             )
         self.store.save_evidence(evidence)
+        # Promotion is per-vertical: the vertical that reported this evidence
+        # (evidence.source_agent) promotes its own track from its own
+        # evidence slice, with its own thresholds. The shared (learner,
+        # topic) level is derived afterwards by quorum aggregation.
+        vertical_id = evidence.source_agent
 
         written: List[MasteryRecord] = []
-        if self._current_level(evidence.learner_id, evidence.node_id) == MasteryLevel.UNKNOWN:
+        if (
+            self._current_level(evidence.learner_id, evidence.node_id, vertical_id)
+            == MasteryLevel.UNKNOWN
+        ):
             written.append(
                 self._write_record(
                     evidence.learner_id,
                     evidence.node_id,
                     MasteryLevel.BEGINNER,
                     HEURISTIC_VERSION,
-                    self.params_for(evidence.learner_id, evidence.node_id),
+                    self.params_for(
+                        evidence.learner_id, evidence.node_id, vertical_id
+                    ),
                     [evidence.id],
                     updated_at=evidence.occurred_at,
+                    vertical_id=vertical_id,
                 )
             )
 
@@ -130,10 +210,14 @@ class MasteryEngine:
         # Each step re-reads the stored level, so one strong evidence set can
         # chain BEGINNER -> INTERMEDIATE -> ADVANCED, writing one record per step.
         while True:
-            level = self._current_level(evidence.learner_id, evidence.node_id)
+            level = self._current_level(
+                evidence.learner_id, evidence.node_id, vertical_id
+            )
             if level == MasteryLevel.ADVANCED:
                 break
-            nxt = self._try_promote(evidence.learner_id, evidence.node_id, level)
+            nxt = self._try_promote(
+                evidence.learner_id, evidence.node_id, level, vertical_id
+            )
             if nxt is None:
                 break
             written.append(nxt)
@@ -143,7 +227,10 @@ class MasteryEngine:
             # record always sorts last. If the level did not move, re-looping
             # would spin forever writing duplicates — surface the ordering
             # violation instead of hanging.
-            if self._current_level(evidence.learner_id, evidence.node_id) == level:
+            if (
+                self._current_level(evidence.learner_id, evidence.node_id, vertical_id)
+                == level
+            ):
                 raise RuntimeError(
                     f"promotion to {nxt.level.value} did not advance "
                     f"{evidence.node_id} past {level.value}; refusing to loop"
@@ -152,11 +239,15 @@ class MasteryEngine:
         return written
 
     def _try_promote(
-        self, learner_id: str, node_id: str, current: MasteryLevel
+        self, learner_id: str, node_id: str, current: MasteryLevel, vertical_id: str
     ) -> Optional[MasteryRecord]:
-        params = self.params_for(learner_id, node_id)
+        params = self.params_for(learner_id, node_id, vertical_id)
         evidence = sorted(
-            self.store.list_evidence(learner_id, node_id),
+            (
+                e
+                for e in self.store.list_evidence(learner_id, node_id)
+                if e.source_agent == vertical_id
+            ),
             # (occurred_at, id): identical timestamps break ties by id so the
             # same evidence set always promotes the same way, regardless of
             # the order verticals submitted it in.
@@ -205,6 +296,7 @@ class MasteryEngine:
             params,
             [e.id for e in candidates],
             updated_at=max(anchor, _utcnow()),
+            vertical_id=vertical_id,
         )
 
     # --------------------------------------------------------------- assert
@@ -216,12 +308,21 @@ class MasteryEngine:
         level: MasteryLevel,
         asserted_by: str,
         reason: str,
+        vertical_id: str = "default",
     ) -> MasteryRecord:
         """Privileged override path for assessment agents and humans.
 
         Writes a MasteryRecord marked as an assertion. It does not erase or
-        rewrite history — it appends, like everything else. Subsequent
-        evidence continues from the asserted level.
+        rewrite history — it appends, like everything else.
+
+        Assertions are learner-level knowledge, not track knowledge: the
+        assertion record is excluded from per-vertical tracks (see
+        ``vertical_levels``) and instead floors the shared (learner, topic)
+        level via ``_current_level``, bypassing the quorum — a privileged
+        assertion is a deliberate statement about the learner, not a noisy
+        heuristic inference, so it needs no cross-vertical confirmation.
+        Subsequent evidence continues to accumulate on the vertical tracks
+        underneath the floor.
         """
         if isinstance(level, str):
             level = MasteryLevel(level)
@@ -240,27 +341,99 @@ class MasteryEngine:
             node_id,
             level,
             ASSERTION_VERSION,
-            self.params_for(learner_id, node_id),
+            self.params_for(learner_id, node_id, vertical_id),
             evidence_ids=[],
             assertion=True,
             asserted_by=asserted_by,
             reason=reason,
             updated_at=_utcnow(),
+            vertical_id=vertical_id,
         )
 
     # -------------------------------------------------------------- resolve
 
     def current_level(self, learner_id: str, node_id: str) -> MasteryLevel:
-        """The node's own latest record: leaf-level, no rollup, no overrides.
+        """The shared (learner, topic) level: quorum aggregation over every
+        vertical's track (see ``aggregate_vertical_mastery``).
 
         For aggregated views (concepts, subjects, decomposed topics) use
-        ``effective_mastery`` / ``rolled_up_mastery`` instead."""
-
+        ``effective_mastery`` / ``rolled_up_mastery`` instead. For one
+        vertical's own track, use ``vertical_level``.
+        """
         return self._current_level(learner_id, node_id)
 
-    def _current_level(self, learner_id: str, node_id: str) -> MasteryLevel:
-        rec = self.store.get_current_mastery(learner_id, node_id)
-        return rec.level if rec else MasteryLevel.UNKNOWN
+    def _current_level(
+        self, learner_id: str, node_id: str, vertical_id: Optional[str] = None
+    ) -> MasteryLevel:
+        if vertical_id is not None:
+            # One vertical's own track: a pure function of that vertical's
+            # heuristic evidence. Assertions are learner-level knowledge, not
+            # track knowledge, so they do not appear here — see
+            # vertical_levels; the assertion floor below handles them.
+            return self.vertical_level(learner_id, node_id, vertical_id)
+        levels = self.vertical_levels(learner_id, node_id)
+        agg = aggregate_vertical_mastery(
+            levels,
+            self.params_for(learner_id, node_id),
+        )
+        # Assertions bypass the quorum: a privileged assertion is a deliberate
+        # statement about the learner, not a noisy heuristic inference, so it
+        # needs no cross-vertical confirmation. The latest assertion (history
+        # is oldest -> newest) floors the shared level.
+        floor = self._assertion_floor(learner_id, node_id)
+        if floor is None:
+            return agg
+        if agg == MasteryLevel.UNKNOWN:
+            return floor
+        return max((agg, floor), key=lambda l: MASTERY_SCORES[l])
+
+    def _assertion_floor(
+        self, learner_id: str, node_id: str
+    ) -> Optional[MasteryLevel]:
+        """Latest assertion level for (learner, node), or None.
+
+        History is append-only and ordered oldest -> newest, so the last
+        assertion seen wins — mirroring the single-track ratchet where the
+        latest record wins.
+        """
+        floor: Optional[MasteryLevel] = None
+        for rec in self.store.get_mastery_history(learner_id, node_id):
+            if rec.assertion:
+                floor = rec.level
+        return floor
+
+    def vertical_level(
+        self, learner_id: str, node_id: str, vertical_id: str
+    ) -> MasteryLevel:
+        """One vertical's own track level: no aggregation, no rollup.
+
+        Tracks are pure heuristic: assertion records are learner-level
+        knowledge and never appear in a track (they floor the shared level
+        instead — see ``_current_level``).
+        """
+        return self.vertical_levels(learner_id, node_id).get(
+            vertical_id, MasteryLevel.UNKNOWN
+        )
+
+    def vertical_levels(
+        self, learner_id: str, node_id: str
+    ) -> Dict[str, MasteryLevel]:
+        """Each vertical's current heuristic level for the node.
+
+        History is ordered oldest -> newest, so the last record seen per
+        vertical_id is its current level. Assertion records are excluded:
+        an assertion is a privileged statement about the learner, not an
+        inference from that vertical's evidence, and it must not count as
+        the vertical's attestation in ``aggregate_vertical_mastery`` (it
+        would otherwise double-count — once as a track attestation, once
+        as the assertion floor).
+        """
+        levels: Dict[str, MasteryLevel] = {}
+        for rec in self.store.get_mastery_history(learner_id, node_id):
+            if rec.assertion:
+                continue
+            levels[rec.vertical_id] = rec.level
+        return levels
 
     def active_override(
         self,
@@ -400,6 +573,7 @@ class MasteryEngine:
         assertion: bool = False,
         asserted_by: Optional[str] = None,
         reason: Optional[str] = None,
+        vertical_id: str = "default",
     ) -> MasteryRecord:
         record = MasteryRecord(
             id=_new_id("mr"),
@@ -413,6 +587,7 @@ class MasteryEngine:
             assertion=assertion,
             asserted_by=asserted_by,
             reason=reason,
+            vertical_id=vertical_id,
         )
         self.store.save_mastery_record(record)
         return record

@@ -53,6 +53,32 @@ specific topic. The core contribution is underneath that interface:
   older one). Promoting an override retires the scope's whole temporary stack, so
   the new assertion stands on its own.
 
+## Verticals and quorum aggregation
+
+Evidence is reported by **verticals** — the agentic processes around the learner
+(a tutor vertical, an evaluator vertical, a practice app). `Evidence.source_agent`
+is a vertical's **stable identity**: one vertical must use one stable value, and
+different values create independent mastery tracks. Quiz/practice/dialogue are
+`activity_type` values *within* a vertical, not verticals themselves.
+
+- Each vertical's evidence promotes its **own track** through heuristic-v1
+  independently, using that vertical's parameters.
+- The shared (learner, topic) level is a **quorum aggregation** over the tracks
+  (`aggregate_vertical_mastery`, exported from `edupaal`):
+  - all tracks `UNKNOWN` → shared `UNKNOWN`;
+  - `ADVANCED` requires **`xvertical_quorum_advanced`** tracks at `ADVANCED`
+    (default 2) — one vertical's `ADVANCED` is not enough to transfer;
+  - a lone `ADVANCED` track caps the shared level at `INTERMEDIATE`;
+  - otherwise the shared level is the highest attested track level.
+- Per-vertical promotion parameters resolve in this precedence order: **topic plan
+  override → nearest ancestor plan override → per-vertical parameters → engine
+  defaults**. The shared quorum uses the plan override or engine defaults, never
+  one particular vertical's parameters.
+- **Assertions are learner-level, not vertical attestations**: `assert_mastery()`
+  floors the shared level (it bypasses the quorum) and assertion records never
+  double-count as vertical evidence. A later assertion replaces the floor
+  (including lowering it); evidence-driven aggregation may rise above it.
+
 ## Knowledge graph
 
 Four fixed upper levels: `Space → Subject → Concept → Topic`. Topics are

@@ -41,10 +41,11 @@ class EduPAALSkill:
         graph: KnowledgeGraph,
         default_params: Optional[MasteryParams] = None,
         learner_id: Optional[str] = None,
+        vertical_params: Optional[Dict[str, MasteryParams]] = None,
     ) -> None:
         self.store = store
         self.graph = graph
-        self.engine = MasteryEngine(store, graph, default_params)
+        self.engine = MasteryEngine(store, graph, default_params, vertical_params)
         self.learner_id = learner_id
         self._retriever: Optional[Retriever] = None
 
@@ -129,12 +130,18 @@ class EduPAALSkill:
         return self.engine.record_evidence(evidence)
 
     def assert_mastery(
-        self, node_id: str, level: MasteryLevel, asserted_by: str, reason: str
+        self,
+        node_id: str,
+        level: MasteryLevel,
+        asserted_by: str,
+        reason: str,
+        vertical_id: str = "default",
     ) -> MasteryRecord:
         """Privileged assertion path (assessment agents, humans). Appends to
         history; never rewrites it."""
         return self.engine.assert_mastery(
-            self._require_learner(), node_id, level, asserted_by, reason
+            self._require_learner(), node_id, level, asserted_by, reason,
+            vertical_id=vertical_id,
         )
 
     # ---------------------------------------------------------------- overrides

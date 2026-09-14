@@ -16,13 +16,15 @@ RULE_VERSIONS = {"heuristic-v1", "assertion-v1"}
 
 
 def _drive(skill, learner_id):
-    """A fixed evidence script ending at ADVANCED via two promotions."""
+    """A fixed evidence script: two verticals each drive their own track
+    to ADVANCED, so the shared level confirms ADVANCED by quorum."""
     evidences = [
         vb_evidence(NODE, 0.90, "quiz", "quiz-agent", learner_id, day=0, ev_id=f"{learner_id}-p1"),
-        vb_evidence(NODE, 0.85, "quiz", "quiz-agent", learner_id, day=1, ev_id=f"{learner_id}-p2"),
+        vb_evidence(NODE, 0.85, "practice", "quiz-agent", learner_id, day=1, ev_id=f"{learner_id}-p2"),
         vb_evidence(NODE, 0.92, "quiz", "quiz-agent", learner_id, day=2, ev_id=f"{learner_id}-p3"),
-        vb_evidence(NODE, 0.93, "practice", "practice-agent", learner_id, day=3, ev_id=f"{learner_id}-p4"),
-        vb_evidence(NODE, 0.94, "dialogue", "tutor-agent", learner_id, day=4, ev_id=f"{learner_id}-p5"),
+        vb_evidence(NODE, 0.93, "quiz", "practice-agent", learner_id, day=3, ev_id=f"{learner_id}-p4"),
+        vb_evidence(NODE, 0.94, "practice", "practice-agent", learner_id, day=4, ev_id=f"{learner_id}-p5"),
+        vb_evidence(NODE, 0.95, "quiz", "practice-agent", learner_id, day=5, ev_id=f"{learner_id}-p6"),
     ]
     submit_all(skill, evidences)
     return evidences
@@ -70,31 +72,37 @@ def test_transition_replayable_from_record_alone(tmp_path):
     evidences = _drive(skill, "prov-replay")
     by_id = {e.id: e for e in evidences}
     history = skill.mastery_history(NODE)
-    assert [r.level for r in history] == [
-        MasteryLevel.BEGINNER, MasteryLevel.INTERMEDIATE, MasteryLevel.ADVANCED,
-    ]
-    prev = MasteryLevel.UNKNOWN
+    # two verticals, each [BEGINNER, INTERMEDIATE, ADVANCED] on its track
+    by_vertical = {}
     for rec in history:
-        params = MasteryParams.from_dict(rec.params_in_effect)
-        cited = [by_id[eid] for eid in rec.evidence_ids]
-        # hand-rolled single-step check of heuristic-v1 for this transition
-        if prev == MasteryLevel.UNKNOWN:
-            expected = MasteryLevel.BEGINNER
-            assert len(cited) == 1
-        else:
-            assert len(cited) == params.k_evidence
-            mean = sum(e.performance for e in cited) / len(cited)
-            bar = params.t_intermediate if prev == MasteryLevel.BEGINNER else params.t_advanced
-            assert mean >= bar, f"record {rec.id}: mean {mean} below bar {bar}"
-            assert all(e.performance >= params.t_contradict for e in cited)
-            if rec.level == MasteryLevel.ADVANCED and params.cross_modal_advanced:
-                assert len({e.activity_type for e in cited}) >= 2
-            expected = (
-                MasteryLevel.INTERMEDIATE if prev == MasteryLevel.BEGINNER
-                else MasteryLevel.ADVANCED
-            )
-        assert rec.level == expected, f"record {rec.id} not replayable"
-        prev = rec.level
+        by_vertical.setdefault(rec.vertical_id, []).append(rec)
+    assert set(by_vertical) == {"quiz-agent", "practice-agent"}
+    for track in by_vertical.values():
+        assert [r.level for r in track] == [
+            MasteryLevel.BEGINNER, MasteryLevel.INTERMEDIATE, MasteryLevel.ADVANCED,
+        ]
+        prev = MasteryLevel.UNKNOWN
+        for rec in track:
+            params = MasteryParams.from_dict(rec.params_in_effect)
+            cited = [by_id[eid] for eid in rec.evidence_ids]
+            # hand-rolled single-step check of heuristic-v1 for this transition
+            if prev == MasteryLevel.UNKNOWN:
+                expected = MasteryLevel.BEGINNER
+                assert len(cited) == 1
+            else:
+                assert len(cited) == params.k_evidence
+                mean = sum(e.performance for e in cited) / len(cited)
+                bar = params.t_intermediate if prev == MasteryLevel.BEGINNER else params.t_advanced
+                assert mean >= bar, f"record {rec.id}: mean {mean} below bar {bar}"
+                assert all(e.performance >= params.t_contradict for e in cited)
+                if rec.level == MasteryLevel.ADVANCED and params.cross_modal_advanced:
+                    assert len({e.activity_type for e in cited}) >= 2
+                expected = (
+                    MasteryLevel.INTERMEDIATE if prev == MasteryLevel.BEGINNER
+                    else MasteryLevel.ADVANCED
+                )
+            assert rec.level == expected, f"record {rec.id} not replayable"
+            prev = rec.level
 
 
 def test_history_append_only_and_current_is_latest(tmp_path):

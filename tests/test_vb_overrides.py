@@ -104,11 +104,14 @@ def test_evidence_after_override_still_accumulates(tmp_path):
     Once the override is cleared, the accumulated evidence speaks."""
     skill = vb_skill(tmp_path, learner_id="ovr-evidence")
     skill.set_override(MasteryLevel.BEGINNER, reason="holding", scope_node_id=NODE)
-    submit_all(skill, [
-        vb_evidence(NODE, 0.92, "quiz", "q", "ovr-evidence", day=0, ev_id="oe1"),
-        vb_evidence(NODE, 0.93, "practice", "p", "ovr-evidence", day=1, ev_id="oe2"),
-        vb_evidence(NODE, 0.94, "dialogue", "d", "ovr-evidence", day=2, ev_id="oe3"),
-    ])
+    # two verticals drive their tracks to ADVANCED: the shared level
+    # confirms ADVANCED by quorum underneath the override
+    for agent, tag in (("quiz-agent", "a"), ("practice-agent", "b")):
+        submit_all(skill, [
+            vb_evidence(NODE, 0.92, "quiz", agent, "ovr-evidence", day=0, ev_id=f"{tag}e1"),
+            vb_evidence(NODE, 0.93, "practice", agent, "ovr-evidence", day=1, ev_id=f"{tag}e2"),
+            vb_evidence(NODE, 0.94, "dialogue", agent, "ovr-evidence", day=2, ev_id=f"{tag}e3"),
+        ])
     # override still shapes the read...
     assert skill.effective_mastery(NODE) == MasteryLevel.BEGINNER
     # ...but the heuristic history advanced underneath
@@ -122,24 +125,28 @@ def test_evidence_after_assertion_can_promote_past_never_below(tmp_path):
     skill.assert_mastery(OTHER, MasteryLevel.INTERMEDIATE,
                          asserted_by="exam-board", reason="midterm")
     assert skill.effective_mastery(OTHER) == MasteryLevel.INTERMEDIATE
-    # strong later evidence promotes past the assertion...
-    submit_all(skill, [
-        vb_evidence(OTHER, 0.92, "quiz", "q", "ovr-assert-ev", day=10, ev_id="oa1"),
-        vb_evidence(OTHER, 0.93, "practice", "p", "ovr-assert-ev", day=11, ev_id="oa2"),
-        vb_evidence(OTHER, 0.94, "dialogue", "d", "ovr-assert-ev", day=12, ev_id="oa3"),
-    ])
+    # strong later evidence on two verticals promotes past the assertion...
+    for agent, tag in (("quiz-agent", "a"), ("practice-agent", "b")):
+        submit_all(skill, [
+            vb_evidence(OTHER, 0.92, "quiz", agent, "ovr-assert-ev", day=10, ev_id=f"{tag}a1"),
+            vb_evidence(OTHER, 0.93, "practice", agent, "ovr-assert-ev", day=11, ev_id=f"{tag}a2"),
+            vb_evidence(OTHER, 0.94, "dialogue", agent, "ovr-assert-ev", day=12, ev_id=f"{tag}a3"),
+        ])
     assert skill.effective_mastery(OTHER) == MasteryLevel.ADVANCED
     # ...while weak evidence never demotes below it (no demotion, by design)
     skill2 = vb_skill(tmp_path, learner_id="ovr-assert-ev2")
     skill2.assert_mastery(OTHER, MasteryLevel.INTERMEDIATE,
                           asserted_by="exam-board", reason="midterm")
     submit_all(skill2, [
-        vb_evidence(OTHER, 0.10, "quiz", "q", "ovr-assert-ev2", day=10, ev_id="oa4"),
-        vb_evidence(OTHER, 0.05, "quiz", "q", "ovr-assert-ev2", day=11, ev_id="oa5"),
+        vb_evidence(OTHER, 0.10, "quiz", "quiz-agent", "ovr-assert-ev2", day=10, ev_id="oa4"),
+        vb_evidence(OTHER, 0.05, "quiz", "quiz-agent", "ovr-assert-ev2", day=11, ev_id="oa5"),
     ])
     assert skill2.effective_mastery(OTHER) == MasteryLevel.INTERMEDIATE
-    # the assertion record stays in history as the durable floor
-    assert skill2.mastery_history(OTHER)[0].assertion is True
+    # the assertion record stays in history as the durable floor (history is
+    # ordered by updated_at, so the backdated evidence record sorts first)
+    assertion_recs = [r for r in skill2.mastery_history(OTHER) if r.assertion]
+    assert len(assertion_recs) == 1
+    assert assertion_recs[0].asserted_by == "exam-board"
 
 
 def test_override_does_not_leak_across_learners(tmp_path):

@@ -323,7 +323,7 @@ class MemOSProvider:
         self._write_append_only(kind, record_id, rec, record)
 
     def get_mastery_history(
-        self, learner_id: str, node_id: str
+        self, learner_id: str, node_id: str, vertical_id: Optional[str] = None
     ) -> List[MasteryRecord]:
         records = [
             R.from_record(record)
@@ -331,13 +331,15 @@ class MemOSProvider:
                 R.KIND_MASTERY_RECORD, learner_id=learner_id, node_id=node_id
             )
         ]
+        if vertical_id is not None:
+            records = [r for r in records if r.vertical_id == vertical_id]
         # updated_at, then id as a deterministic tiebreak (SQLite uses rowid).
         return sorted(records, key=lambda r: (r.updated_at, r.id))
 
     def get_current_mastery(
-        self, learner_id: str, node_id: str
+        self, learner_id: str, node_id: str, vertical_id: Optional[str] = None
     ) -> Optional[MasteryRecord]:
-        history = self.get_mastery_history(learner_id, node_id)
+        history = self.get_mastery_history(learner_id, node_id, vertical_id)
         return history[-1] if history else None
 
     # -- overrides --

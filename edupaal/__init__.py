@@ -15,7 +15,12 @@ from .entities import (
     NodeLevel,
 )
 from .graph import KnowledgeGraph
-from .mastery import ASSERTION_VERSION, HEURISTIC_VERSION, MasteryEngine
+from .mastery import (
+    ASSERTION_VERSION,
+    HEURISTIC_VERSION,
+    MasteryEngine,
+    aggregate_vertical_mastery,
+)
 from .retrieval import Retriever
 from .seed import build_seed_graph
 from .skill import EduPAALSkill
@@ -25,6 +30,7 @@ __all__ = [
     "MASTERY_SCORES",
     "ASSERTION_VERSION",
     "HEURISTIC_VERSION",
+    "aggregate_vertical_mastery",
     "DynamicOverride",
     "EduPAALSkill",
     "Evidence",

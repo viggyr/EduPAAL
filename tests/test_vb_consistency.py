@@ -87,8 +87,11 @@ def test_two_skill_instances_share_one_memory(tmp_path):
     evaluator.cold_start(learner_id="cons-shared", node_selection=topics, preferences=prefs)
 
     guide.record_evidence(vb_evidence("linear-equations", 0.9, "dialogue", "guide", "cons-shared", day=0, ev_id="sh1"))
-    guide.record_evidence(vb_evidence("linear-equations", 0.9, "dialogue", "guide", "cons-shared", day=1, ev_id="sh2"))
+    guide.record_evidence(vb_evidence("linear-equations", 0.9, "quiz", "guide", "cons-shared", day=1, ev_id="sh2"))
     guide.record_evidence(vb_evidence("linear-equations", 0.9, "dialogue", "guide", "cons-shared", day=2, ev_id="sh3"))
+    # guide's own track is ADVANCED, but the shared level caps a lone
+    # ADVANCED at INTERMEDIATE until another vertical confirms
+    assert guide.engine.vertical_level("cons-shared", "linear-equations", "guide") == MasteryLevel.ADVANCED
     assert guide.effective_mastery("linear-equations") == MasteryLevel.INTERMEDIATE
 
     # the evaluator's packet sees the guide's evidence immediately
@@ -97,6 +100,9 @@ def test_two_skill_instances_share_one_memory(tmp_path):
     assert evaluator.effective_mastery("linear-equations") == MasteryLevel.INTERMEDIATE
 
     evaluator.record_evidence(vb_evidence("linear-equations", 0.92, "quiz", "evaluator", "cons-shared", day=3, ev_id="sh4"))
+    evaluator.record_evidence(vb_evidence("linear-equations", 0.92, "practice", "evaluator", "cons-shared", day=4, ev_id="sh5"))
+    evaluator.record_evidence(vb_evidence("linear-equations", 0.92, "quiz", "evaluator", "cons-shared", day=5, ev_id="sh6"))
+    # two ADVANCED tracks: the quorum confirms, visible through both skills
     assert guide.effective_mastery("linear-equations") == MasteryLevel.ADVANCED
     assert guide.grounding_packet("linear-equations")["mastery_context"]["node"]["mastery"] == "advanced"
 
@@ -184,13 +190,17 @@ def test_next_topic_invariants_random_dags(tmp_path):
 def test_ranking_invariants(tmp_path):
     """weakest/strongest obey their documented contracts."""
     skill = vb_skill(tmp_path, learner_id="cons-rank")
+    # two verticals confirm ADVANCED on linear-equations by quorum
+    for agent, tag in (("quiz-agent", "a"), ("practice-agent", "b")):
+        submit_all(skill, [
+            vb_evidence("linear-equations", 0.95, "quiz", agent, "cons-rank", day=0, ev_id=f"{tag}r1"),
+            vb_evidence("linear-equations", 0.95, "practice", agent, "cons-rank", day=1, ev_id=f"{tag}r2"),
+            vb_evidence("linear-equations", 0.95, "dialogue", agent, "cons-rank", day=2, ev_id=f"{tag}r3"),
+        ])
     submit_all(skill, [
-        vb_evidence("linear-equations", 0.95, "quiz", "q", "cons-rank", day=0, ev_id="r1"),
-        vb_evidence("linear-equations", 0.95, "practice", "p", "cons-rank", day=1, ev_id="r2"),
-        vb_evidence("linear-equations", 0.95, "dialogue", "d", "cons-rank", day=2, ev_id="r3"),
-        vb_evidence("linearization", 0.70, "quiz", "q", "cons-rank", day=0, ev_id="r4"),
-        vb_evidence("linearization", 0.72, "quiz", "q", "cons-rank", day=1, ev_id="r5"),
-        vb_evidence("linearization", 0.71, "quiz", "q", "cons-rank", day=2, ev_id="r6"),
+        vb_evidence("linearization", 0.70, "quiz", "quiz-agent", "cons-rank", day=0, ev_id="r4"),
+        vb_evidence("linearization", 0.72, "quiz", "quiz-agent", "cons-rank", day=1, ev_id="r5"),
+        vb_evidence("linearization", 0.71, "quiz", "quiz-agent", "cons-rank", day=2, ev_id="r6"),
     ])
     assert skill.effective_mastery("linear-equations") == MasteryLevel.ADVANCED
     assert skill.effective_mastery("linearization") == MasteryLevel.INTERMEDIATE
@@ -217,11 +227,13 @@ def test_next_topic_none_when_plan_complete(tmp_path):
     skill = vb_skill(tmp_path, learner_id="cons-done",
                      topics=["linear-equations", "dropout-rate"])
     for node in ("linear-equations", "dropout-rate"):
-        submit_all(skill, [
-            vb_evidence(node, 0.92, "quiz", "q", "cons-done", day=0, ev_id=f"done-{node}-1"),
-            vb_evidence(node, 0.93, "practice", "p", "cons-done", day=1, ev_id=f"done-{node}-2"),
-            vb_evidence(node, 0.94, "dialogue", "d", "cons-done", day=2, ev_id=f"done-{node}-3"),
-        ])
+        # two verticals confirm ADVANCED on each node by quorum
+        for agent, tag in (("quiz-agent", "a"), ("practice-agent", "b")):
+            submit_all(skill, [
+                vb_evidence(node, 0.92, "quiz", agent, "cons-done", day=0, ev_id=f"{tag}done-{node}-1"),
+                vb_evidence(node, 0.93, "practice", agent, "cons-done", day=1, ev_id=f"{tag}done-{node}-2"),
+                vb_evidence(node, 0.94, "dialogue", agent, "cons-done", day=2, ev_id=f"{tag}done-{node}-3"),
+            ])
         assert skill.effective_mastery(node) == MasteryLevel.ADVANCED
     assert skill.next_topic() is None
     packet = skill.grounding_packet("linear-equations")

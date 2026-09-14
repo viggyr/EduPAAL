@@ -91,10 +91,16 @@ def promote_to(skill: EduPAALSkill, node_id: str, level: str, day: int = 0,
             ("quiz", "quiz-agent", 0.92),
         ]
     else:
+        # ADVANCED overall needs cross-vertical confirmation (quorum = 2):
+        # two verticals each earn ADVANCED on their own track (3 evidences,
+        # >= 2 activity types for the cross-modal gate).
         evidences = [
             ("quiz", "quiz-agent", 0.90),
-            ("practice", "practice-agent", 0.85),
-            ("visualization", "viz-agent", 0.92),
+            ("practice", "quiz-agent", 0.85),
+            ("quiz", "quiz-agent", 0.92),
+            ("quiz", "practice-agent", 0.90),
+            ("practice", "practice-agent", 0.86),
+            ("quiz", "practice-agent", 0.91),
         ]
     for i, (activity, source, perf) in enumerate(evidences):
         skill.record_evidence(

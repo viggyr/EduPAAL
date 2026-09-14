@@ -124,11 +124,13 @@ def test_ten_level_subtopic_chain(tmp_path):
         node_selection=[leaf],
         preferences=LearnerPreferences(learning_style="visual", pace="steady"),
     )
-    submit_all(skill, [
-        vb_evidence(leaf, 0.92, "quiz", "q", "adv-deep", day=0, ev_id="deep1"),
-        vb_evidence(leaf, 0.93, "practice", "p", "adv-deep", day=1, ev_id="deep2"),
-        vb_evidence(leaf, 0.94, "dialogue", "d", "adv-deep", day=2, ev_id="deep3"),
-    ])
+    # two verticals confirm ADVANCED at the leaf by quorum...
+    for agent, tag in (("quiz-agent", "a"), ("practice-agent", "b")):
+        submit_all(skill, [
+            vb_evidence(leaf, 0.92, "quiz", agent, "adv-deep", day=0, ev_id=f"{tag}deep1"),
+            vb_evidence(leaf, 0.93, "practice", agent, "adv-deep", day=1, ev_id=f"{tag}deep2"),
+            vb_evidence(leaf, 0.94, "dialogue", agent, "adv-deep", day=2, ev_id=f"{tag}deep3"),
+        ])
     assert skill.effective_mastery(leaf) == MasteryLevel.ADVANCED
     # every ancestor up the 10-deep chain reports ADVANCED via rollup
     for i in range(10):
@@ -148,19 +150,22 @@ def test_future_timestamp_shifts_recency_anchor(tmp_path):
     evidences land inside the new window, promotion proceeds."""
     skill = vb_skill(tmp_path, learner_id="adv-future")
     submit_all(skill, [
-        vb_evidence(NODE, 0.95, "quiz", "q", "adv-future", day=0, ev_id="fu1"),
-        vb_evidence(NODE, 0.94, "quiz", "q", "adv-future", day=1, ev_id="fu2"),
+        vb_evidence(NODE, 0.95, "quiz", "quiz-agent", "adv-future", day=0, ev_id="fu1"),
+        vb_evidence(NODE, 0.94, "quiz", "quiz-agent", "adv-future", day=1, ev_id="fu2"),
     ])
     # a buggy vertical reports with a clock 60 days in the future
-    skill.record_evidence(vb_evidence(NODE, 0.96, "quiz", "q", "adv-future", day=61, ev_id="fu3"))
+    skill.record_evidence(vb_evidence(NODE, 0.96, "quiz", "quiz-agent", "adv-future", day=61, ev_id="fu3"))
     # anchor is now day 61; window [31, 61] holds only fu3 (< K) -> no promotion
     assert skill.effective_mastery(NODE) == MasteryLevel.BEGINNER
     # self-healing: K evidences near the new anchor promote normally
     submit_all(skill, [
-        vb_evidence(NODE, 0.95, "quiz", "q", "adv-future", day=62, ev_id="fu4"),
-        vb_evidence(NODE, 0.96, "practice", "p", "adv-future", day=63, ev_id="fu5"),
+        vb_evidence(NODE, 0.95, "quiz", "quiz-agent", "adv-future", day=62, ev_id="fu4"),
+        vb_evidence(NODE, 0.96, "practice", "quiz-agent", "adv-future", day=63, ev_id="fu5"),
     ])
-    assert skill.effective_mastery(NODE) == MasteryLevel.ADVANCED
+    # the vertical's own track self-heals to ADVANCED; the shared level
+    # caps the lone ADVANCED track at INTERMEDIATE (transfer bar)
+    assert skill.engine.vertical_level("adv-future", NODE, "quiz-agent") == MasteryLevel.ADVANCED
+    assert skill.effective_mastery(NODE) == MasteryLevel.INTERMEDIATE
     # history stayed sane and ordered throughout
     stamps = [r.updated_at for r in skill.mastery_history(NODE)]
     assert stamps == sorted(stamps)
